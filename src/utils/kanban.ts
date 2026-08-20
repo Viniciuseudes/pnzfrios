@@ -53,3 +53,19 @@ export function nextStatus(s: OrderStatus): OrderStatus | null {
 export function colFor(s: OrderStatus) {
   return KANBAN_COLS.find((c) => c.id === s);
 }
+
+// FUNÇÃO RESTAURADA: Calcula o tempo decorrido para exibição na interface
+export function timeAgo(dateString: string | undefined): string {
+  if (!dateString) return "";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.round(diffMs / 60000);
+  const diffHrs = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHrs / 24);
+
+  if (diffMins < 60) return `${diffMins}m atrás`;
+  if (diffHrs < 24) return `${diffHrs}h atrás`;
+  if (diffDays === 1) return `Ontem`;
+  return `${diffDays}d atrás`;
+}
