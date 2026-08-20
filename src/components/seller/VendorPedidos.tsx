@@ -3,20 +3,13 @@ import { useState, useEffect } from "react";
 import { CheckCircle, Clock, ChevronRight, ClipboardList } from "lucide-react";
 import { colFor, nextStatus, timeAgo } from "@/utils/kanban";
 import { fmt } from "@/utils/format";
-import type { KanbanOrder, OrderStatus } from "@/types"; // <-- OrderStatus importado aqui
+import type { KanbanOrder, OrderStatus } from "@/types";
 import { OrderDetailModal } from "@/components/ui/OrderDetailModal";
 import { supabase } from "@/utils/supabase";
 import { useApp } from "@/contexts/AppContext";
 
-// Constante tipada corretamente como um array de OrderStatus
-const STATUS_FLOW: OrderStatus[] = [
-  "novo",
-  "analise",
-  "aprovado",
-  "separacao",
-  "em_rota",
-  "entregue",
-];
+// Constante tipada corretamente como um array de OrderStatus NOVO
+const STATUS_FLOW: OrderStatus[] = ["novo", "preparando", "rota", "entregue"];
 
 export function VendorPedidos() {
   const { session } = useApp();
@@ -277,7 +270,7 @@ export function VendorPedidos() {
                         {timeAgo(o.updatedAt)}
                       </p>
                       <div className="flex items-center gap-2">
-                        {o.status === "em_rota" && (
+                        {o.status === "rota" && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
