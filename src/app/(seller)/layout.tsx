@@ -6,10 +6,16 @@ import { SellerShell } from "@/components/seller/SellerShell";
 import { useApp } from "@/contexts/AppContext";
 import { sellers } from "@/data/sellers";
 
-export default function SellerLayout({ children }: { children: React.ReactNode }) {
+export default function SellerLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const { session } = useApp();
   const router = useRouter();
-  const seller = session?.sellerId ? sellers.find(s => s.id === session.sellerId) : null;
+  const seller = session?.sellerId
+    ? sellers.find((s) => s.id === session.sellerId)
+    : null;
 
   useEffect(() => {
     if (!session) {
@@ -17,7 +23,9 @@ export default function SellerLayout({ children }: { children: React.ReactNode }
       return;
     }
     if (session.role !== "vendedor" || !seller) {
-      router.replace(session?.role === "gestor" ? "/admin/dashboard" : "/login");
+      router.replace(
+        session?.role === "gestor" ? "/admin/dashboard" : "/login",
+      );
     }
   }, [session, seller, router]);
 

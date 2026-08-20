@@ -44,9 +44,16 @@ export interface Product {
   name: string;
   category: string;
   price: number;
+  cost_price?: number;
   stock: number;
+  min_stock?: number;
   unit: string;
-  img: string;
+  img?: string;
+  sku?: string;
+  batch_number?: string;
+  manufacturing_date?: string;
+  expiration_date?: string;
+  storage_type?: 'Congelado' | 'Resfriado' | 'Seco';
 }
 
 export interface Seller {
@@ -55,7 +62,7 @@ export interface Seller {
   avatar: string;
   target: number;
   achieved: number;
-  orders: number;
+  orders_count: number;
   region: string;
 }
 
