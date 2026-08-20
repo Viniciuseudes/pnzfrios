@@ -1,6 +1,9 @@
 export type View = "dashboard" | "pedidos" | "clientes" | "produtos" | "vendedores" | "rotas" | "ciclo";
 export type SellerView = "home" | "catalogo" | "venda" | "rotas" | "meta" | "meuspedidos";
-export type OrderStatus = "novo" | "analise" | "aprovado" | "separacao" | "em_rota" | "entregue" | "cancelado";
+
+// CORREÇÃO 1: Atualizado para bater 100% com as colunas do novo Kanban
+export type OrderStatus = "novo" | "preparando" | "rota" | "entregue" | "cancelado";
+
 export type UserRole = "gestor" | "vendedor";
 
 export interface OrderHistoryEntry {
@@ -37,6 +40,13 @@ export interface Client {
   email: string;
   city: string;
   status: "Ativo" | "Inativo";
+  // CORREÇÃO 2: Adicionados os novos campos de endereço do Modal de Cliente
+  zip_code?: string;
+  street?: string;
+  number?: string;
+  complement?: string;
+  neighborhood?: string;
+  state?: string;
 }
 
 export interface Product {
@@ -48,7 +58,7 @@ export interface Product {
   stock: number;
   min_stock?: number;
   unit: string;
-  img?: string;
+  img?: string | null;
   sku?: string;
   batch_number?: string;
   manufacturing_date?: string;
