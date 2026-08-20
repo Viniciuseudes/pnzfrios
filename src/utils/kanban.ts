@@ -1,6 +1,5 @@
 import type { OrderStatus } from "@/types";
 
-// Definimos a ordem lógica de como um pedido avança
 export const STATUS_FLOW: OrderStatus[] = [
   "novo",
   "preparando",
@@ -8,39 +7,41 @@ export const STATUS_FLOW: OrderStatus[] = [
   "entregue"
 ];
 
-// Definimos o visual e as cores de cada coluna do Kanban
 export const KANBAN_COLS = [
   { 
     id: "novo", 
     label: "Novos Pedidos", 
     bg: "bg-blue-50", 
     border: "border-blue-200", 
-    color: "text-blue-700" 
+    color: "text-blue-700",
+    dot: "bg-blue-500"
   },
   { 
     id: "preparando", 
     label: "Em Separação", 
     bg: "bg-amber-50", 
     border: "border-amber-200", 
-    color: "text-amber-700" 
+    color: "text-amber-700",
+    dot: "bg-amber-500"
   },
   { 
     id: "rota", 
     label: "Em Rota / Entrega", 
     bg: "bg-purple-50", 
     border: "border-purple-200", 
-    color: "text-purple-700" 
+    color: "text-purple-700",
+    dot: "bg-purple-500"
   },
   { 
     id: "entregue", 
     label: "Finalizados", 
     bg: "bg-emerald-50", 
     border: "border-emerald-200", 
-    color: "text-emerald-700" 
+    color: "text-emerald-700",
+    dot: "bg-emerald-500"
   },
 ];
 
-// Função que calcula qual é o próximo passo do pedido (Ex: novo -> preparando)
 export function nextStatus(s: OrderStatus): OrderStatus | null {
   const i = STATUS_FLOW.indexOf(s);
   if (i !== -1 && i < STATUS_FLOW.length - 1) {
@@ -49,12 +50,10 @@ export function nextStatus(s: OrderStatus): OrderStatus | null {
   return null;
 }
 
-// Função para pegar as cores de um status específico (usada na tela de pedidos)
 export function colFor(s: OrderStatus) {
   return KANBAN_COLS.find((c) => c.id === s);
 }
 
-// FUNÇÃO RESTAURADA: Calcula o tempo decorrido para exibição na interface
 export function timeAgo(dateString: string | undefined): string {
   if (!dateString) return "";
   const date = new Date(dateString);
