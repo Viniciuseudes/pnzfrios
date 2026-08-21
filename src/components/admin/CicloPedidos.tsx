@@ -1,5 +1,4 @@
 "use client";
-
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -14,70 +13,11 @@ import {
   MapPin,
   X,
 } from "lucide-react";
-import { colFor, nextStatus, timeAgo } from "@/utils/kanban";
+// CORREÇÃO: KANBAN_COLS agora vem do utilitário oficial unificado
+import { KANBAN_COLS, colFor, nextStatus, timeAgo } from "@/utils/kanban";
 import { fmt } from "@/utils/format";
 import type { KanbanOrder } from "@/types";
 import { OrderDetailModal } from "@/components/ui/OrderDetailModal";
-
-// 1. Trazemos a constante visual para dentro do componente (já que apagamos o mock)
-const KANBAN_COLS = [
-  {
-    id: "novo",
-    label: "Novo Pedido",
-    color: "text-amber-700",
-    bg: "bg-amber-50",
-    border: "border-amber-200",
-    dot: "bg-amber-500",
-  },
-  {
-    id: "analise",
-    label: "Em Análise",
-    color: "text-blue-700",
-    bg: "bg-blue-50",
-    border: "border-blue-200",
-    dot: "bg-blue-500",
-  },
-  {
-    id: "aprovado",
-    label: "Aprovado",
-    color: "text-indigo-700",
-    bg: "bg-indigo-50",
-    border: "border-indigo-200",
-    dot: "bg-indigo-500",
-  },
-  {
-    id: "separacao",
-    label: "Separação",
-    color: "text-violet-700",
-    bg: "bg-violet-50",
-    border: "border-violet-200",
-    dot: "bg-violet-500",
-  },
-  {
-    id: "em_rota",
-    label: "Em Rota",
-    color: "text-orange-700",
-    bg: "bg-orange-50",
-    border: "border-orange-200",
-    dot: "bg-orange-500",
-  },
-  {
-    id: "entregue",
-    label: "Entregue",
-    color: "text-emerald-700",
-    bg: "bg-emerald-50",
-    border: "border-emerald-200",
-    dot: "bg-emerald-500",
-  },
-  {
-    id: "cancelado",
-    label: "Cancelado",
-    color: "text-red-600",
-    bg: "bg-red-50",
-    border: "border-red-200",
-    dot: "bg-red-400",
-  },
-] as const;
 
 function KanbanCard({
   order,
@@ -97,7 +37,6 @@ function KanbanCard({
   const stuck =
     age > 8 && order.status !== "entregue" && order.status !== "cancelado";
 
-  // Cores dinâmicas simples para os avatares baseadas na inicial
   const sellerColors = [
     "bg-amber-600",
     "bg-[#1e4023]",
@@ -166,7 +105,7 @@ function KanbanCard({
         </div>
         <p className="text-[10px] text-muted-foreground/60 mt-1 truncate flex items-center gap-1">
           <MapPin className="w-2.5 h-2.5 flex-shrink-0" />
-          {order.deliveryAddress || "Endereço não informado"}
+          {order.deliveryAddress || "Endereço informado"}
         </p>
         {isAdmin && nextCol && (
           <button
@@ -176,7 +115,7 @@ function KanbanCard({
             }}
             className={`mt-2.5 w-full flex items-center justify-center gap-1 py-1.5 rounded-lg text-[10px] font-bold border transition-all opacity-0 group-hover:opacity-100 ${nextCol.bg} ${nextCol.color} ${nextCol.border} hover:brightness-95`}
           >
-            <ChevronRight className="w-3 h-3" /> → {nextCol.label}
+            <ChevronRight className="w-3 h-3" /> {nextCol.label}
           </button>
         )}
       </div>
@@ -203,7 +142,6 @@ export function CicloPedidos({
   const [search, setSearch] = useState("");
   const [showCancelled, setShowCancelled] = useState(false);
 
-  // 2. Extraímos os vendedores únicos dinamicamente dos pedidos reais do banco
   const activeSellers = useMemo(() => {
     const uniqueIds = Array.from(new Set(orders.map((o) => o.sellerId)));
     return uniqueIds
@@ -227,13 +165,16 @@ export function CicloPedidos({
   });
 
   const activeCols = KANBAN_COLS.filter((c) => c.id !== "cancelado");
+
   const totalPipeline = orders
     .filter((o) => !["entregue", "cancelado"].includes(o.status))
     .reduce((a, o) => a + o.total, 0);
+
   const urgentCount = orders.filter(
     (o) =>
       o.priority === "Urgente" && !["entregue", "cancelado"].includes(o.status),
   ).length;
+
   const cancelledOrders = filtered.filter((o) => o.status === "cancelado");
 
   return (
@@ -255,7 +196,7 @@ export function CicloPedidos({
               <Layers className="w-5 h-5 text-[#1e4023]" /> Ciclo de Pedidos
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Do pedido ao cliente — rastreamento em tempo real
+              Do pedido ao cliente rastreamento em tempo real
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -285,7 +226,6 @@ export function CicloPedidos({
               className="w-full pl-8 pr-3 py-2 rounded-lg border border-border bg-card text-xs focus:outline-none focus:ring-2 focus:ring-primary/30 transition"
             />
           </div>
-
           <select
             value={sellerFilter}
             onChange={(e) =>
@@ -302,7 +242,6 @@ export function CicloPedidos({
               </option>
             ))}
           </select>
-
           <button
             onClick={() =>
               setPriorityFilter((p) => (p === "todas" ? "Urgente" : "todas"))
@@ -335,7 +274,9 @@ export function CicloPedidos({
                     (a.priority === "Urgente" ? -1 : 1) -
                     (b.priority === "Urgente" ? -1 : 1),
                 );
+
               const colTotal = colOrders.reduce((a, o) => a + o.total, 0);
+
               return (
                 <div
                   key={col.id}

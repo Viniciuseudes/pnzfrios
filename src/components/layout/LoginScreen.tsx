@@ -19,12 +19,10 @@ export function LoginScreen({
   const [error, setError] = useState("");
   const [showCreds, setShowCreds] = useState(false);
 
-  // Estado para armazenar as contas reais do banco e mostrar no atalho de dev
   const [demoAccounts, setDemoAccounts] = useState<any[]>([]);
 
   useEffect(() => {
     async function fetchAccounts() {
-      // Busca até 5 contas para o menu de demonstração
       const { data } = await supabase.from("accounts").select("*").limit(5);
       if (data) setDemoAccounts(data);
     }
@@ -37,12 +35,10 @@ export function LoginScreen({
       setError("Preencha e-mail e senha.");
       return;
     }
-
     setError("");
     setLoading(true);
 
     try {
-      // Autenticação consultando a tabela 'accounts' no Supabase
       const { data: acc, error: authError } = await supabase
         .from("accounts")
         .select("*")
@@ -56,10 +52,14 @@ export function LoginScreen({
         return;
       }
 
-      // Delay rápido apenas para fluidez da animação
       setTimeout(() => {
         setLoading(false);
-        onLogin(acc.role as UserRole, acc.seller_id ?? undefined);
+        // CORREÇÃO CRÍTICA: Força o texto para minúsculo para bater com a tipagem ("vendedor" ou "gestor")
+        const safeRole = String(acc.role).toLowerCase() as UserRole;
+        // Puxa o ID do vendedor cobrindo os padrões de nomenclatura do Supabase
+        const safeSellerId = acc.seller_id || acc.sellerId || undefined;
+
+        onLogin(safeRole, safeSellerId);
       }, 800);
     } catch (err) {
       console.error(err);
@@ -178,6 +178,7 @@ export function LoginScreen({
               />
             </div>
           </motion.div>
+
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -225,6 +226,7 @@ export function LoginScreen({
                 }}
               />
             </div>
+
             <div>
               <label className="block text-xs font-medium text-white/60 mb-1.5">
                 Senha
@@ -241,6 +243,7 @@ export function LoginScreen({
                 }}
               />
             </div>
+
             {error && (
               <motion.p
                 initial={{ opacity: 0, y: -4 }}
@@ -250,6 +253,7 @@ export function LoginScreen({
                 {error}
               </motion.p>
             )}
+
             <div className="flex items-center justify-between pt-1">
               <label className="flex items-center gap-2 cursor-pointer">
                 <div
@@ -267,6 +271,7 @@ export function LoginScreen({
                 Esqueceu a senha?
               </button>
             </div>
+
             <button
               type="submit"
               disabled={loading}
@@ -299,7 +304,6 @@ export function LoginScreen({
           </form>
         </motion.div>
 
-        {/* Menu de demonstração para DEV (agora pega os dados do Supabase) */}
         {demoAccounts.length > 0 && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -338,7 +342,7 @@ export function LoginScreen({
                       >
                         <div className="flex items-center gap-2">
                           <span
-                            className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0 ${acc.role === "gestor" ? "bg-[#c8921c]" : "bg-[#1e4023]"}`}
+                            className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0 ${acc.role.toLowerCase() === "gestor" ? "bg-[#c8921c]" : "bg-[#1e4023]"}`}
                           >
                             {acc.avatar}
                           </span>
@@ -352,9 +356,11 @@ export function LoginScreen({
                           </div>
                         </div>
                         <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${acc.role === "gestor" ? "bg-[#c8921c]/20 text-[#c8921c]" : "bg-emerald-900/40 text-emerald-400"}`}
+                          className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${acc.role.toLowerCase() === "gestor" ? "bg-[#c8921c]/20 text-[#c8921c]" : "bg-emerald-900/40 text-emerald-400"}`}
                         >
-                          {acc.role === "gestor" ? "Gestor" : "Vendedor"}
+                          {acc.role.toLowerCase() === "gestor"
+                            ? "Gestor"
+                            : "Vendedor"}
                         </span>
                       </button>
                     ))}
@@ -364,15 +370,6 @@ export function LoginScreen({
             </AnimatePresence>
           </motion.div>
         )}
-
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.9 }}
-          className="text-center text-white/20 text-xs mt-4"
-        >
-          PNZ Frios © 2025 • Todos os direitos reservados
-        </motion.p>
       </motion.div>
     </div>
   );

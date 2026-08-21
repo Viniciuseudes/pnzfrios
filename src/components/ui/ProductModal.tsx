@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { supabase } from "@/utils/supabase";
-import type { Product } from "@/types"; // Importando a tipagem
+import type { Product } from "@/types";
 
 type ProductFormData = {
   name: string;
@@ -54,7 +54,6 @@ export function ProductModal({
 }) {
   const [submitError, setSubmitError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
-
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -77,7 +76,6 @@ export function ProductModal({
     },
   });
 
-  // PREENCHE OS DADOS SE FOR UMA EDIÇÃO
   useEffect(() => {
     if (productToEdit) {
       reset({
@@ -150,7 +148,7 @@ export function ProductModal({
           imageUrl = publicUrlData.publicUrl;
         }
       } else if (!imagePreview) {
-        imageUrl = null; // Se o preview foi removido, limpa a URL
+        imageUrl = null;
       }
 
       const numericPrice = parseFloat(
@@ -243,7 +241,6 @@ export function ProductModal({
             onSubmit={handleSubmit(onSubmit)}
             className="space-y-8"
           >
-            {/* Foto */}
             <div>
               <div className="flex items-center gap-2 mb-4 border-b border-border pb-2">
                 <ImagePlus className="w-4 h-4 text-primary" />
@@ -290,28 +287,9 @@ export function ProductModal({
                     </span>
                   </button>
                 )}
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">
-                    Imagem Principal
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-                    Esta imagem será exibida no catálogo. Use imagens quadradas
-                    (1:1) com fundo branco. Max 2MB.
-                  </p>
-                  {imagePreview && (
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="text-xs font-semibold text-primary hover:underline mt-3 block"
-                    >
-                      Trocar imagem
-                    </button>
-                  )}
-                </div>
               </div>
             </div>
 
-            {/* Seção 1: Identificação */}
             <div>
               <div className="flex items-center gap-2 mb-4 border-b border-border pb-2">
                 <span className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
@@ -377,7 +355,6 @@ export function ProductModal({
               </div>
             </div>
 
-            {/* Seção 2: Rastreabilidade */}
             <div>
               <div className="flex items-center gap-2 mb-4 border-b border-border pb-2">
                 <span className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
@@ -424,7 +401,6 @@ export function ProductModal({
               </div>
             </div>
 
-            {/* Seção 3: Custos */}
             <div>
               <div className="flex items-center gap-2 mb-4 border-b border-border pb-2">
                 <span className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
