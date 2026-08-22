@@ -29,6 +29,9 @@ type ProductFormData = {
   batch_number: string;
   manufacturing_date: string;
   expiration_date: string;
+  // CAMPOS DE COMISSÃO
+  commission_type: "fixed" | "percentage";
+  commission_value: string;
 };
 
 const CATEGORIAS_PADRAO = [
@@ -73,6 +76,8 @@ export function ProductModal({
       cost_price: "0,00",
       price: "0,00",
       category: "",
+      commission_type: "percentage",
+      commission_value: "0,00",
     },
   });
 
@@ -95,6 +100,11 @@ export function ProductModal({
         batch_number: productToEdit.batch_number || "",
         manufacturing_date: productToEdit.manufacturing_date || "",
         expiration_date: productToEdit.expiration_date || "",
+        // CARREGA COMISSÃO
+        commission_type: productToEdit.commission_type || "percentage",
+        commission_value: productToEdit.commission_value
+          ? productToEdit.commission_value.toFixed(2).replace(".", ",")
+          : "0,00",
       });
       if (productToEdit.img) {
         setImagePreview(productToEdit.img);
@@ -157,6 +167,9 @@ export function ProductModal({
       const numericCost = parseFloat(
         data.cost_price.replace(/\./g, "").replace(",", "."),
       );
+      const numericCommission = parseFloat(
+        data.commission_value.replace(/\./g, "").replace(",", "."),
+      );
 
       const payload = {
         name: data.name,
@@ -172,6 +185,8 @@ export function ProductModal({
         manufacturing_date: data.manufacturing_date || null,
         expiration_date: data.expiration_date || null,
         img: imageUrl,
+        commission_type: data.commission_type,
+        commission_value: numericCommission,
       };
 
       if (productToEdit) {
@@ -408,7 +423,7 @@ export function ProductModal({
                 </span>
                 <DollarSign className="w-4 h-4 text-amber-600" />
                 <h3 className="text-sm font-bold text-foreground uppercase tracking-wider">
-                  Custos & Estoque
+                  Custos, Comissão & Estoque
                 </h3>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
@@ -434,7 +449,7 @@ export function ProductModal({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-foreground mb-1">
-                    Margem
+                    Margem Bruta
                   </label>
                   <div className="w-full px-3 py-2.5 rounded-lg border border-transparent bg-secondary text-sm font-bold flex items-center">
                     {margin}%
@@ -455,7 +470,29 @@ export function ProductModal({
                     <option value="g">Grama (g)</option>
                   </select>
                 </div>
-                <div className="sm:col-span-2">
+
+                {/* === CAIXA DE COMISSÃO DESTAQUE === */}
+                <div className="sm:col-span-2 bg-blue-50/60 p-4 rounded-xl border border-blue-200">
+                  <label className="block text-xs font-bold text-blue-900 uppercase tracking-wider mb-2">
+                    Comissão do Vendedor
+                  </label>
+                  <div className="flex gap-2">
+                    <select
+                      {...register("commission_type")}
+                      className="w-1/2 px-3 py-2.5 rounded-lg border border-blue-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                    >
+                      <option value="percentage">% Porcentagem</option>
+                      <option value="fixed">R$ Fixo (por item)</option>
+                    </select>
+                    <input
+                      {...register("commission_value")}
+                      placeholder="0,00"
+                      className="w-1/2 px-3 py-2.5 rounded-lg border border-blue-200 bg-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                    />
+                  </div>
+                </div>
+
+                <div className="sm:col-span-1">
                   <label className="block text-xs font-medium text-foreground mb-1">
                     Estoque Atual
                   </label>
@@ -465,9 +502,9 @@ export function ProductModal({
                     className="w-full px-3 py-2.5 rounded-lg border border-border bg-input-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                   />
                 </div>
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-1">
                   <label className="block text-xs font-medium text-foreground mb-1">
-                    Mínimo (Alerta)
+                    Mín. (Alerta)
                   </label>
                   <input
                     type="number"

@@ -63,6 +63,9 @@ export interface Product {
   manufacturing_date?: string;
   expiration_date?: string;
   storage_type?: 'Congelado' | 'Resfriado' | 'Seco';
+  // NOVOS CAMPOS DE COMISSÃO:
+  commission_type?: "fixed" | "percentage";
+  commission_value?: number;
 }
 
 export interface Seller {
