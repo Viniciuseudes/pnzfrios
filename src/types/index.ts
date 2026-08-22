@@ -1,7 +1,7 @@
 export type View = "dashboard" | "pedidos" | "clientes" | "produtos" | "vendedores" | "rotas" | "ciclo";
 export type SellerView = "home" | "catalogo" | "venda" | "rotas" | "meta" | "meuspedidos";
 
-// CORREÇÃO 1: Atualizado para bater 100% com as colunas do novo Kanban
+// Status atualizados
 export type OrderStatus = "novo" | "preparando" | "rota" | "entregue" | "cancelado";
 
 export type UserRole = "gestor" | "vendedor";
@@ -40,7 +40,6 @@ export interface Client {
   email: string;
   city: string;
   status: "Ativo" | "Inativo";
-  // CORREÇÃO 2: Adicionados os novos campos de endereço do Modal de Cliente
   zip_code?: string;
   street?: string;
   number?: string;
@@ -92,6 +91,8 @@ export interface RouteStop {
   order: number;
   observation: string;
   status: "Pendente" | "Visitado" | "Não visitado";
+  // AQUI ESTÁ A CORREÇÃO: Propriedade adicionada para o botão do Google Maps
+  fullAddress?: string; 
 }
 
 export interface SalesRoute {

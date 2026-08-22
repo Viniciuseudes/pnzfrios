@@ -1,6 +1,13 @@
 "use client";
 import { useState, useEffect } from "react";
-import { CheckCircle, Clock, ChevronRight, ClipboardList } from "lucide-react";
+import {
+  Clock,
+  ChevronRight,
+  ClipboardList,
+  TrendingUp,
+  Package,
+  MapPin,
+} from "lucide-react";
 import { colFor, nextStatus, timeAgo } from "@/utils/kanban";
 import { fmt } from "@/utils/format";
 import type { KanbanOrder, OrderStatus } from "@/types";
@@ -8,7 +15,6 @@ import { OrderDetailModal } from "@/components/ui/OrderDetailModal";
 import { supabase } from "@/utils/supabase";
 import { useApp } from "@/contexts/AppContext";
 
-// Constante tipada corretamente como um array de OrderStatus NOVO
 const STATUS_FLOW: OrderStatus[] = ["novo", "preparando", "rota", "entregue"];
 
 export function VendorPedidos() {
@@ -20,7 +26,6 @@ export function VendorPedidos() {
 
   async function fetchOrders() {
     if (!session?.sellerId) return;
-    setLoading(true);
 
     const [{ data: sData }, { data: oData, error }] = await Promise.all([
       supabase
@@ -32,12 +37,11 @@ export function VendorPedidos() {
         .from("orders")
         .select(
           `
-        id, order_number, status, priority, created_at, updated_at, notes, delivery_address,
-        client_id, clients(name),
-        sellers(name, avatar),
-        order_items(product_id, qty, price, products(name)),
-        order_history(status, changed_by, note, created_at)
-      `,
+          id, order_number, status, priority, created_at, updated_at, notes, delivery_address,
+          client_id, clients(name), sellers(name, avatar),
+          order_items(product_id, qty, price, products(name)),
+          order_history(status, changed_by, note, created_at)
+        `,
         )
         .eq("seller_id", session.sellerId)
         .order("created_at", { ascending: false }),
@@ -65,7 +69,7 @@ export function VendorPedidos() {
           0,
         ),
         priority: o.priority,
-        status: o.status as OrderStatus, // Garantindo o cast para OrderStatus
+        status: o.status as OrderStatus,
         createdAt: o.created_at,
         updatedAt: o.updated_at,
         notes: o.notes || "",
@@ -82,15 +86,43 @@ export function VendorPedidos() {
     setLoading(false);
   }
 
+  // ATUALIZAÇÃO EM TEMPO REAL VIA SUPABASE CHANNELS
   useEffect(() => {
     fetchOrders();
+
+    if (!session?.sellerId) return;
+
+    const channel = supabase
+      .channel("seller_orders_updates")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "orders",
+          filter: `seller_id=eq.${session.sellerId}`,
+        },
+        () => {
+          fetchOrders();
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "order_history" },
+        () => {
+          fetchOrders();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [session]);
 
-  // Função para avançar o status (Ex: De "Em Rota" para "Entregue")
   async function handleAdvance(id: string, note: string) {
     const order = orders.find((o) => o.id === id);
     if (!order) return;
-
     const next = nextStatus(order.status);
     if (!next) return;
 
@@ -101,11 +133,8 @@ export function VendorPedidos() {
     await supabase
       .from("order_history")
       .insert([{ order_id: id, status: next, changed_by: sellerName, note }]);
-
-    fetchOrders(); // Recarrega para atualizar a tela
   }
 
-  // Função para adicionar uma nota logística
   async function handleAddNote(id: string, note: string) {
     if (!note.trim()) return;
     const order = orders.find((o) => o.id === id);
@@ -120,14 +149,12 @@ export function VendorPedidos() {
       .from("orders")
       .update({ updated_at: new Date().toISOString() })
       .eq("id", id);
-
-    fetchOrders();
   }
 
   if (loading) {
     return (
       <div className="flex justify-center py-20">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#1e4023]"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
       </div>
     );
   }
@@ -136,7 +163,7 @@ export function VendorPedidos() {
     (o) => o.status !== "entregue" && o.status !== "cancelado",
   );
   const doneOrders = orders.filter((o) => o.status === "entregue");
-  const cancelledOrders = orders.filter((o) => o.status === "cancelado");
+  const totalVolume = activeOrders.reduce((acc, o) => acc + o.total, 0);
 
   return (
     <>
@@ -145,154 +172,127 @@ export function VendorPedidos() {
           order={selected}
           onClose={() => setSelected(null)}
           onAdvance={handleAdvance}
-          onCancel={() => {}} // Vendedor geralmente não cancela pedido direto no app, só via base
+          onCancel={() => {}}
           onAddNote={handleAddNote}
           isAdmin={false}
         />
       )}
-      <div className="space-y-5 pb-4">
-        <div>
-          <h2 className="text-lg font-bold text-foreground">Meus Pedidos</h2>
-          <p className="text-xs text-muted-foreground">
-            {orders.length} pedido(s) • {activeOrders.length} ativo(s)
+
+      <div className="space-y-6 pb-4">
+        {/* Header Premium */}
+        <div className="bg-primary rounded-2xl p-5 text-primary-foreground shadow-lg relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none" />
+          <p className="text-sm font-medium opacity-80 mb-1">
+            Resumo de Vendas (Ativas)
           </p>
-        </div>
-
-        <div className="flex gap-2 overflow-x-auto pb-1 custom-scrollbar">
-          {[
-            {
-              label: "Em Andamento",
-              count: activeOrders.length,
-              color: "bg-[#1e4023] text-white",
-            },
-            {
-              label: "Entregues",
-              count: doneOrders.length,
-              color: "bg-emerald-100 text-emerald-700",
-            },
-            {
-              label: "Cancelados",
-              count: cancelledOrders.length,
-              color: "bg-red-50 text-red-600",
-            },
-          ].map((s) => (
-            <div
-              key={s.label}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold flex-shrink-0 ${s.color}`}
-            >
-              <span>{s.count}</span>
-              <span>{s.label}</span>
+          <h2 className="text-3xl font-black tracking-tight mb-4">
+            {fmt(totalVolume)}
+          </h2>
+          <div className="flex gap-4">
+            <div className="bg-black/20 px-3 py-2 rounded-xl flex-1 backdrop-blur-md border border-white/10">
+              <p className="text-[10px] uppercase tracking-wider opacity-70 font-semibold mb-0.5">
+                Em Andamento
+              </p>
+              <p className="text-lg font-bold">{activeOrders.length}</p>
             </div>
-          ))}
+            <div className="bg-black/20 px-3 py-2 rounded-xl flex-1 backdrop-blur-md border border-white/10">
+              <p className="text-[10px] uppercase tracking-wider opacity-70 font-semibold mb-0.5">
+                Finalizados
+              </p>
+              <p className="text-lg font-bold">{doneOrders.length}</p>
+            </div>
+          </div>
         </div>
 
-        {orders.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2 bg-card border border-border rounded-2xl">
-            <ClipboardList className="w-9 h-9 opacity-20" />
-            <p className="text-sm">Nenhum pedido registrado ainda</p>
+        {activeOrders.length === 0 && doneOrders.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-3 bg-card border border-border rounded-2xl shadow-sm">
+            <ClipboardList className="w-10 h-10 opacity-20" />
+            <p className="text-sm font-medium">Nenhum pedido registrado</p>
           </div>
         )}
 
+        {/* Lista de Pedidos Ativos */}
         {activeOrders.length > 0 && (
           <div className="space-y-3">
-            <p className="text-xs font-semibold text-foreground uppercase tracking-wide">
-              Em Andamento
-            </p>
+            <div className="flex items-center gap-2 px-1">
+              <TrendingUp className="w-4 h-4 text-primary" />
+              <p className="text-sm font-bold text-foreground">
+                Acompanhamento em Tempo Real
+              </p>
+            </div>
+
             {activeOrders.map((o) => {
               const col = colFor(o.status);
               const progress =
                 ((STATUS_FLOW.indexOf(o.status) + 1) / STATUS_FLOW.length) *
                 100;
+
               return (
                 <div
                   key={o.id}
-                  className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden cursor-pointer"
+                  className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden active:scale-[0.98] transition-transform"
                   onClick={() => setSelected(o)}
                 >
                   <div
-                    className={`h-1 ${o.priority === "Urgente" ? "bg-red-500" : col?.dot || "bg-gray-500"}`}
+                    className={`h-1.5 w-full ${o.priority === "Urgente" ? "bg-red-500" : col?.dot || "bg-primary"}`}
                   />
                   <div className="p-4">
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                      <div>
-                        <div className="flex items-center gap-2">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="min-w-0 pr-3">
+                        <div className="flex items-center gap-2 mb-1">
                           <span className="text-xs font-black text-muted-foreground">
                             {o.orderNumber}
                           </span>
                           {o.priority === "Urgente" && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-100">
-                              URGENTE
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700 uppercase">
+                              Urgente
                             </span>
                           )}
                         </div>
-                        <p className="text-sm font-bold text-foreground mt-0.5">
+                        <p className="text-sm font-bold text-foreground leading-tight truncate">
                           {o.clientName}
                         </p>
-                        <p className="text-xs text-muted-foreground">
-                          {o.items.length} itens • {fmt(o.total)}
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className="text-sm font-black text-primary">
+                          {fmt(o.total)}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {o.items.length} itens
                         </p>
                       </div>
-                      {col && (
-                        <span
-                          className={`text-[10px] font-bold px-2 py-1 rounded-xl border flex-shrink-0 ${col.bg} ${col.color} ${col.border}`}
-                        >
-                          {col.label}
-                        </span>
-                      )}
                     </div>
 
-                    <div className="mb-3">
+                    <div className="bg-secondary/40 rounded-xl p-3 mb-3 border border-border/50">
+                      <div className="flex items-center justify-between mb-2">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${col?.bg} ${col?.color} border ${col?.border}`}
+                        >
+                          {col?.label}
+                        </span>
+                        <span className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
+                          <Clock className="w-3 h-3" /> {timeAgo(o.updatedAt)}
+                        </span>
+                      </div>
                       <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-[#1e4023] transition-all"
+                          className="h-full rounded-full bg-primary transition-all duration-500"
                           style={{ width: `${progress}%` }}
                         />
                       </div>
-                      <div className="flex justify-between mt-1">
-                        {STATUS_FLOW.map((s, i) => {
-                          const sCurrent = STATUS_FLOW.indexOf(o.status);
-                          const sCol = colFor(s);
-                          return (
-                            <div
-                              key={s}
-                              className={`text-[8px] text-center flex-1 font-semibold ${i <= sCurrent ? sCol?.color : "text-muted-foreground/30"}`}
-                            >
-                              {sCol?.label.split(" ")[0]}
-                            </div>
-                          );
-                        })}
-                      </div>
                     </div>
 
-                    <div className="flex items-center justify-between">
-                      <p className="text-[10px] text-muted-foreground flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {timeAgo(o.updatedAt)}
-                      </p>
-                      <div className="flex items-center gap-2">
-                        {o.status === "rota" && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelected(o);
-                            }}
-                            className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-xl bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"
-                          >
-                            <CheckCircle className="w-3 h-3" /> Confirmar
-                            Entrega
-                          </button>
-                        )}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelected(o);
-                          }}
-                          className="text-xs text-muted-foreground bg-muted px-2.5 py-1.5 rounded-xl hover:bg-secondary transition-colors"
-                        >
-                          Detalhes
-                        </button>
-                      </div>
-                    </div>
+                    {o.status === "rota" && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelected(o);
+                        }}
+                        className="w-full mt-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-bold shadow-sm"
+                      >
+                        Confirmar Entrega
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -300,29 +300,39 @@ export function VendorPedidos() {
           </div>
         )}
 
+        {/* Lista Histórica */}
         {doneOrders.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-semibold text-foreground uppercase tracking-wide mt-4">
-              Entregues
-            </p>
+          <div className="space-y-3 pt-4">
+            <div className="flex items-center gap-2 px-1">
+              <Package className="w-4 h-4 text-muted-foreground" />
+              <p className="text-sm font-bold text-foreground">
+                Histórico de Entregas
+              </p>
+            </div>
             {doneOrders.slice(0, 10).map((o) => (
               <div
                 key={o.id}
-                className="bg-card rounded-2xl border border-emerald-100 p-4 flex items-center justify-between cursor-pointer hover:bg-emerald-50/30 transition-colors"
+                className="bg-card rounded-xl border border-border p-3 flex items-center justify-between active:bg-secondary transition-colors"
                 onClick={() => setSelected(o)}
               >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
-                    <span className="text-xs font-semibold text-foreground">
-                      {o.orderNumber} • {o.clientName}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 pl-5">
-                    {fmt(o.total)} • {timeAgo(o.updatedAt)}
+                <div className="min-w-0 pr-4">
+                  <p className="text-xs font-bold text-foreground truncate">
+                    {o.clientName}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                    <MapPin className="w-2.5 h-2.5" />{" "}
+                    {o.deliveryAddress?.split("—")[0] || "Endereço registrado"}
                   </p>
                 </div>
-                <ChevronRight className="w-4 h-4 text-muted-foreground/40" />
+                <div className="text-right">
+                  <p className="text-xs font-black text-foreground">
+                    {fmt(o.total)}
+                  </p>
+                  <p className="text-[9px] text-muted-foreground">
+                    {timeAgo(o.updatedAt)}
+                  </p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground/30 ml-2" />
               </div>
             ))}
           </div>

@@ -1,36 +1,27 @@
 "use client";
 import { useState, useEffect } from "react";
-import {
-  MapPin,
-  Navigation,
-  Clock,
-  CheckCircle,
-  Navigation2,
-  Phone,
-  Zap,
-} from "lucide-react";
-import { motion } from "motion/react";
+import { Navigation, MapPin, Clock, Phone, Navigation2 } from "lucide-react";
 import { supabase } from "@/utils/supabase";
 import { useApp } from "@/contexts/AppContext";
+import type { SalesRoute } from "@/types";
 
 export function SellerRotas() {
   const { session } = useApp();
-  const [routes, setRoutes] = useState<any[]>([]);
+  const [routes, setRoutes] = useState<SalesRoute[]>([]);
   const [loading, setLoading] = useState(true);
 
-  async function fetchRoutes() {
+  async function fetchMyRoutes() {
     if (!session?.sellerId) return;
-    setLoading(true);
 
-    // Busca rotas Ativas ou Concluídas do vendedor, ordenando pela data mais recente
+    // Busca apenas as rotas Ativas e Concluídas do Vendedor Logado
     const { data, error } = await supabase
       .from("routes")
       .select(
         `
-        id, name, route_date, start_time, status, priority, notes,
-        route_stops(
-          id, stop_order, observation, status,
-          clients(name, city, phone, street, number, neighborhood)
+        *,
+        route_stops (
+          id, stop_order, observation, status, client_id,
+          clients ( name, city, phone, street, number, neighborhood )
         )
       `,
       )
@@ -39,175 +30,221 @@ export function SellerRotas() {
       .order("route_date", { ascending: false });
 
     if (data && !error) {
-      // Ordena as paradas pela ordem definida pelo Admin
-      const formattedRoutes = data.map((r: any) => ({
-        ...r,
-        route_stops: r.route_stops.sort(
-          (a: any, b: any) => a.stop_order - b.stop_order,
-        ),
+      const formatted: SalesRoute[] = data.map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        date: r.route_date,
+        startTime: r.start_time,
+        sellerId: r.seller_id,
+        sellerName: "",
+        sellerAvatar: "",
+        status: r.status,
+        priority: r.priority,
+        notes: r.notes || "",
+        stops: (r.route_stops || [])
+          .sort((a: any, b: any) => a.stop_order - b.stop_order)
+          .map((s: any) => ({
+            id: s.id,
+            clientId: s.client_id,
+            clientName: s.clients?.name || "Cliente",
+            city: s.clients?.city || "",
+            phone: s.clients?.phone || "",
+            order: s.stop_order,
+            observation: s.observation || "",
+            status: s.status,
+            // Construção do endereço completo
+            fullAddress: `${s.clients?.street || ""}, ${s.clients?.number || ""} - ${s.clients?.neighborhood || ""}`,
+          })),
       }));
-      setRoutes(formattedRoutes);
+      setRoutes(formatted);
     }
     setLoading(false);
   }
 
+  // ATUALIZAÇÃO EM TEMPO REAL DAS ROTAS
   useEffect(() => {
-    fetchRoutes();
+    fetchMyRoutes();
+
+    if (!session?.sellerId) return;
+
+    const channel = supabase
+      .channel("seller_routes")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "routes",
+          filter: `seller_id=eq.${session.sellerId}`,
+        },
+        () => {
+          fetchMyRoutes();
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "route_stops" },
+        () => {
+          fetchMyRoutes();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [session]);
 
-  // Função para marcar check-in no cliente
-  async function handleCheckIn(stopId: number, currentStatus: string) {
-    const newStatus = currentStatus === "Visitado" ? "Pendente" : "Visitado";
-
-    // Atualiza otimisticamente na tela
-    setRoutes((prev) =>
-      prev.map((r) => ({
-        ...r,
-        route_stops: r.route_stops.map((s: any) =>
-          s.id === stopId ? { ...s, status: newStatus } : s,
-        ),
-      })),
-    );
-
-    // Atualiza no banco de dados
+  async function handleCheckin(stopId: number) {
     await supabase
       .from("route_stops")
-      .update({ status: newStatus })
+      .update({ status: "Visitado" })
       .eq("id", stopId);
   }
 
   if (loading) {
     return (
       <div className="flex justify-center py-20">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#1e4023]"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
       </div>
     );
   }
 
-  const activeRoute = routes.find((r) => r.status === "Ativa");
-  const pastRoutes = routes.filter((r) => r.status === "Concluída");
-
-  return (
-    <div className="space-y-6 pb-4">
-      <div>
-        <h2 className="text-lg font-bold text-foreground">Minhas Rotas</h2>
-        <p className="text-xs text-muted-foreground">
-          Seu roteiro de visitas planejado
+  if (routes.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
+        <div className="w-20 h-20 bg-secondary rounded-full flex items-center justify-center mb-4">
+          <Navigation className="w-8 h-8 text-muted-foreground opacity-50" />
+        </div>
+        <h2 className="text-xl font-bold text-foreground mb-2">Rota Livre</h2>
+        <p className="text-sm text-muted-foreground">
+          Nenhuma rota de visitas foi atribuída a você no momento. Continue
+          focado nos atendimentos avulsos.
         </p>
       </div>
+    );
+  }
 
-      {!activeRoute ? (
-        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-3 bg-card border border-border rounded-2xl">
-          <Navigation className="w-10 h-10 opacity-20" />
-          <p className="text-sm">Nenhuma rota ativa para hoje</p>
-        </div>
-      ) : (
-        <div className="bg-card rounded-3xl border border-border overflow-hidden shadow-sm">
-          <div
-            className={`p-5 text-white relative overflow-hidden ${activeRoute.priority === "Urgente" ? "bg-red-600" : "bg-[#1e4023]"}`}
-          >
-            <div className="absolute top-0 right-0 w-32 h-32 rounded-full bg-white/10 -translate-y-10 translate-x-10" />
-            <div className="relative">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/20 uppercase tracking-widest backdrop-blur-sm">
-                  Rota do Dia
-                </span>
-                {activeRoute.priority === "Urgente" && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white text-red-600 uppercase tracking-widest flex items-center gap-1">
-                    <Zap className="w-3 h-3" /> Urgente
-                  </span>
-                )}
-              </div>
-              <h3 className="text-lg font-bold leading-tight mt-2">
-                {activeRoute.name}
-              </h3>
-              <div className="flex items-center gap-4 text-xs mt-3 opacity-90">
-                <span className="flex items-center gap-1">
-                  <Clock className="w-3.5 h-3.5" />
-                  {activeRoute.start_time}
-                </span>
-                <span className="flex items-center gap-1">
-                  <MapPin className="w-3.5 h-3.5" />
-                  {activeRoute.route_stops.length} paradas
-                </span>
-              </div>
-            </div>
+  // Pegamos a rota mais recente como a "Rota do Dia"
+  const activeRoute = routes[0];
+  const progress =
+    activeRoute.stops.length > 0
+      ? (activeRoute.stops.filter((s) => s.status === "Visitado").length /
+          activeRoute.stops.length) *
+        100
+      : 0;
+
+  return (
+    <div className="space-y-6 pb-24">
+      <div className="bg-card border border-border shadow-sm rounded-2xl p-5 overflow-hidden relative">
+        <div
+          className={`absolute top-0 left-0 w-1.5 h-full ${activeRoute.status === "Concluída" ? "bg-emerald-500" : "bg-primary"}`}
+        />
+        <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">
+          Mapa de Visitas
+        </p>
+        <h1 className="text-xl font-black text-foreground mb-4">
+          {activeRoute.name}
+        </h1>
+
+        <div className="flex flex-wrap gap-4 text-sm mb-4">
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <Clock className="w-4 h-4 text-primary" />
+            <span className="font-semibold text-foreground">
+              {activeRoute.startTime}
+            </span>{" "}
+            Saída
           </div>
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <MapPin className="w-4 h-4 text-primary" />
+            <span className="font-semibold text-foreground">
+              {activeRoute.stops.length}
+            </span>{" "}
+            Paradas
+          </div>
+        </div>
 
-          {activeRoute.notes && (
-            <div className="bg-amber-50 border-b border-amber-100 p-3 text-xs text-amber-800 flex gap-2 items-start">
-              <div className="w-4 h-4 rounded-full bg-amber-200 text-amber-700 flex items-center justify-center font-bold flex-shrink-0 mt-0.5">
-                !
-              </div>
-              <p className="italic">"{activeRoute.notes}"</p>
-            </div>
-          )}
+        <div className="h-2 rounded-full bg-muted overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-1000 ${progress === 100 ? "bg-emerald-500" : "bg-primary"}`}
+            style={{ width: `${progress}%` }}
+          />
+        </div>
 
-          <div className="p-2">
-            {activeRoute.route_stops.map((stop: any, i: number) => {
-              const isVisited = stop.status === "Visitado";
+        {activeRoute.notes && (
+          <div className="mt-4 p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-800 italic">
+            <strong className="block mb-1">Aviso da Base:</strong>
+            {activeRoute.notes}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-4 px-2">
+        <h3 className="text-sm font-bold text-foreground">
+          Roteiro de Clientes
+        </h3>
+
+        <div className="relative pl-4">
+          <div className="absolute top-0 bottom-0 left-5 w-0.5 bg-border rounded-full" />
+
+          <div className="space-y-6">
+            {activeRoute.stops.map((stop, index) => {
+              const isDone = stop.status === "Visitado";
+
               return (
-                <div key={stop.id} className="relative flex gap-4 p-3 group">
-                  {i < activeRoute.route_stops.length - 1 && (
-                    <div
-                      className={`absolute left-[27px] top-[40px] bottom-[-10px] w-0.5 ${isVisited ? "bg-emerald-500" : "bg-border"} z-0`}
-                    />
-                  )}
-
-                  <button
-                    onClick={() => handleCheckIn(stop.id, stop.status)}
-                    className={`relative z-10 w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border-2 transition-colors ${
-                      isVisited
-                        ? "bg-emerald-500 border-emerald-500 text-white"
-                        : "bg-card border-border text-muted-foreground"
-                    }`}
-                  >
-                    {isVisited ? (
-                      <CheckCircle className="w-4 h-4" />
-                    ) : (
-                      <span className="text-xs font-bold">{i + 1}</span>
-                    )}
-                  </button>
+                <div key={stop.id} className="relative flex gap-4">
+                  <div
+                    className={`relative z-10 w-3 h-3 mt-1.5 rounded-full ring-4 ring-background ${isDone ? "bg-emerald-500" : "bg-muted-foreground"}`}
+                  />
 
                   <div
-                    className={`flex-1 bg-secondary/30 rounded-2xl p-4 transition-all ${isVisited ? "opacity-60" : ""}`}
+                    className={`flex-1 bg-card border rounded-2xl p-4 shadow-sm transition-opacity ${isDone ? "opacity-60 border-emerald-100" : "border-border"}`}
                   >
-                    <p className="text-sm font-bold text-foreground leading-tight">
-                      {stop.clients.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                      <MapPin className="w-3 h-3 flex-shrink-0" />
-                      {stop.clients.street}, {stop.clients.number} -{" "}
-                      {stop.clients.neighborhood}
-                    </p>
-
-                    {stop.clients.phone && (
-                      <a
-                        href={`https://wa.me/55${stop.clients.phone.replace(/\D/g, "")}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1e4023] bg-[#1e4023]/10 px-2.5 py-1.5 rounded-lg mt-3 hover:bg-[#1e4023]/20 transition-colors"
-                      >
-                        <Phone className="w-3 h-3" /> Chamar
-                      </a>
-                    )}
-
-                    {stop.observation && (
-                      <div className="mt-3 bg-card rounded-lg p-2.5 border border-border text-[11px] text-muted-foreground italic">
-                        "{stop.observation}"
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="pr-2">
+                        <span className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-1 block">
+                          Parada {index + 1}
+                        </span>
+                        <h4
+                          className={`text-base font-bold leading-tight ${isDone ? "line-through text-muted-foreground" : "text-foreground"}`}
+                        >
+                          {stop.clientName}
+                        </h4>
                       </div>
-                    )}
+                    </div>
 
-                    {!isVisited && (
+                    <div className="space-y-2 mt-3 text-xs text-muted-foreground">
+                      <p className="flex items-start gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                        <span className="line-clamp-2">{stop.fullAddress}</span>
+                      </p>
+                      <p className="flex items-center gap-1.5">
+                        <Phone className="w-3.5 h-3.5 flex-shrink-0" />
+                        {stop.phone || "Telefone indisponível"}
+                      </p>
+                      {stop.observation && (
+                        <p className="p-2 bg-secondary/50 rounded-lg italic border border-border/50">
+                          "{stop.observation}"
+                        </p>
+                      )}
+                    </div>
+
+                    {!isDone && (
                       <div className="mt-4 flex gap-2">
                         <a
-                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${stop.clients.street}, ${stop.clients.number}, ${stop.clients.city}`)}`}
+                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.fullAddress + " " + stop.city)}`}
                           target="_blank"
                           rel="noreferrer"
-                          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-[#1e4023] text-white text-xs font-bold shadow-sm active:scale-95 transition-all"
+                          className="flex-1 py-2.5 bg-secondary text-foreground text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
                         >
                           <Navigation2 className="w-3.5 h-3.5" /> Navegar
                         </a>
+                        <button
+                          onClick={() => handleCheckin(stop.id)}
+                          className="flex-[2] py-2.5 bg-primary text-white text-xs font-bold rounded-xl active:scale-95 transition-transform"
+                        >
+                          Fazer Check-in
+                        </button>
                       </div>
                     )}
                   </div>
@@ -216,34 +253,7 @@ export function SellerRotas() {
             })}
           </div>
         </div>
-      )}
-
-      {pastRoutes.length > 0 && (
-        <div className="space-y-3 pt-4 border-t border-border">
-          <h3 className="text-sm font-bold text-foreground">
-            Rotas Concluídas
-          </h3>
-          {pastRoutes.slice(0, 3).map((r) => (
-            <div
-              key={r.id}
-              className="bg-card border border-border rounded-xl p-3 flex items-center justify-between opacity-70"
-            >
-              <div>
-                <p className="text-sm font-semibold text-foreground">
-                  {r.name}
-                </p>
-                <p className="text-[10px] text-muted-foreground mt-0.5">
-                  {new Date(r.route_date + "T00:00:00").toLocaleDateString(
-                    "pt-BR",
-                  )}{" "}
-                  • {r.route_stops.length} paradas
-                </p>
-              </div>
-              <CheckCircle className="w-5 h-5 text-emerald-500" />
-            </div>
-          ))}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

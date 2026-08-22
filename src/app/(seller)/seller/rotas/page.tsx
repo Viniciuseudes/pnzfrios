@@ -1,6 +1,6 @@
 "use client";
 import { SellerRotas } from "@/components/seller/SellerRotas";
 
-export default function SellerRotasPage() {
+export default function RotasPage() {
   return <SellerRotas />;
 }
