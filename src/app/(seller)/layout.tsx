@@ -1,10 +1,8 @@
 "use client";
-
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { SellerShell } from "@/components/seller/SellerShell";
 import { useApp } from "@/contexts/AppContext";
-import { sellers } from "@/data/sellers";
+import { SellerShell } from "@/components/seller/SellerShell";
 
 export default function SellerLayout({
   children,
@@ -13,23 +11,33 @@ export default function SellerLayout({
 }) {
   const { session } = useApp();
   const router = useRouter();
-  const seller = session?.sellerId
-    ? sellers.find((s) => s.id === session.sellerId)
-    : null;
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
+    setIsMounted(true);
     if (!session) {
       router.replace("/login");
       return;
     }
-    if (session.role !== "vendedor" || !seller) {
-      router.replace(
-        session?.role === "gestor" ? "/admin/dashboard" : "/login",
-      );
-    }
-  }, [session, seller, router]);
 
-  if (!session || session.role !== "vendedor" || !seller) return null;
+    const role = String(session.role).trim().toLowerCase();
+    if (role !== "vendedor") {
+      router.replace("/login");
+    }
+  }, [session, router]);
+
+  // Tela de carregamento enquanto valida a sessão
+  if (
+    !isMounted ||
+    !session ||
+    String(session.role).trim().toLowerCase() !== "vendedor"
+  ) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-[#1e4023]">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+      </div>
+    );
+  }
 
   return <SellerShell>{children}</SellerShell>;
 }
