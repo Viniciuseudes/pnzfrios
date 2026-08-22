@@ -16,27 +16,112 @@ import type { Seller } from "@/types";
 export function SellerMinhaMeta() {
   const { session } = useApp();
   const [seller, setSeller] = useState<Seller | null>(null);
+
+  // Novos estados para o cálculo em tempo real
+  const [realAchieved, setRealAchieved] = useState(0);
+  const [realCommission, setRealCommission] = useState(0);
+  const [validOrdersCount, setValidOrdersCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // Consideramos uma comissão fictícia de 3% para gamificar a tela
-  const COMMISSION_RATE = 0.03;
+  async function fetchMetaAndSales() {
+    if (!session?.sellerId) return;
 
-  useEffect(() => {
-    async function fetchMeta() {
-      if (!session?.sellerId) return;
+    // 1. Busca os dados do vendedor (para saber o valor da Meta/Target)
+    const { data: sellerData, error: sellerError } = await supabase
+      .from("sellers")
+      .select("*")
+      .eq("id", session.sellerId)
+      .single();
 
-      const { data, error } = await supabase
-        .from("sellers")
-        .select("*")
-        .eq("id", session.sellerId)
-        .single();
-
-      if (data && !error) {
-        setSeller(data as Seller);
-      }
-      setLoading(false);
+    if (sellerData && !sellerError) {
+      setSeller(sellerData as Seller);
     }
-    fetchMeta();
+
+    // 2. Busca os pedidos do MÊS ATUAL com as configurações de comissão dos produtos
+    const today = new Date();
+    const firstDayOfMonth = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      1,
+    ).toISOString();
+
+    const { data: ordersData } = await supabase
+      .from("orders")
+      .select(
+        `
+        id,
+        status,
+        order_items (
+          qty,
+          price,
+          products (
+            commission_type,
+            commission_value
+          )
+        )
+      `,
+      )
+      .eq("seller_id", session.sellerId)
+      .gte("created_at", firstDayOfMonth) // Apenas vendas deste mês
+      .neq("status", "cancelado"); // Ignora pedidos cancelados
+
+    if (ordersData) {
+      let achieved = 0;
+      let commission = 0;
+      let ordersCount = 0;
+
+      ordersData.forEach((order: any) => {
+        ordersCount++;
+
+        order.order_items.forEach((item: any) => {
+          const itemTotal = item.qty * item.price;
+          achieved += itemTotal; // Soma para o progresso da meta
+
+          // Lógica Sênior: Motor de Cálculo Dinâmico por Produto
+          const cType = item.products?.commission_type || "percentage";
+          const cVal = Number(item.products?.commission_value) || 0;
+
+          if (cType === "percentage") {
+            commission += itemTotal * (cVal / 100);
+          } else if (cType === "fixed") {
+            commission += item.qty * cVal;
+          }
+        });
+      });
+
+      setRealAchieved(achieved);
+      setRealCommission(commission);
+      setValidOrdersCount(ordersCount);
+    }
+
+    setLoading(false);
+  }
+
+  // Efeito principal + Supabase Channels para Tempo Real
+  useEffect(() => {
+    fetchMetaAndSales();
+
+    if (!session?.sellerId) return;
+
+    const channel = supabase
+      .channel("seller_meta_updates")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "orders",
+          filter: `seller_id=eq.${session.sellerId}`,
+        },
+        () => {
+          fetchMetaAndSales();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [session]);
 
   if (loading) {
@@ -57,14 +142,11 @@ export function SellerMinhaMeta() {
   }
 
   const pct =
-    seller.target > 0
-      ? Math.min((seller.achieved / seller.target) * 100, 100)
-      : 0;
-  const isTargetMet = seller.achieved >= seller.target && seller.target > 0;
-  const remaining = Math.max(seller.target - seller.achieved, 0);
-  const estimatedCommission = seller.achieved * COMMISSION_RATE;
+    seller.target > 0 ? Math.min((realAchieved / seller.target) * 100, 100) : 0;
+  const isTargetMet = realAchieved >= seller.target && seller.target > 0;
+  const remaining = Math.max(seller.target - realAchieved, 0);
 
-  // Dias restantes no mês (Lógica simples para gamificação)
+  // Dias restantes no mês
   const today = new Date();
   const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
   const daysLeft = lastDay.getDate() - today.getDate();
@@ -74,7 +156,7 @@ export function SellerMinhaMeta() {
       <div>
         <h2 className="text-lg font-bold text-foreground">Minha Meta</h2>
         <p className="text-xs text-muted-foreground">
-          Acompanhe seu desempenho mensal
+          Acompanhe seu desempenho em tempo real
         </p>
       </div>
 
@@ -96,7 +178,7 @@ export function SellerMinhaMeta() {
               </div>
               <div>
                 <p className="text-white/80 text-xs font-medium uppercase tracking-wider">
-                  Status Mensal
+                  Status de {today.toLocaleString("pt-BR", { month: "long" })}
                 </p>
                 <p className="text-sm font-bold">
                   {isTargetMet ? "Meta Batida! 🎉" : "Em Progresso"}
@@ -110,7 +192,7 @@ export function SellerMinhaMeta() {
 
           <div className="space-y-2 relative">
             <div className="flex justify-between text-xs text-white/80 font-medium">
-              <span>{fmt(seller.achieved)}</span>
+              <span>{fmt(realAchieved)}</span>
               <span>{fmt(seller.target)}</span>
             </div>
             <div className="h-3 rounded-full bg-black/20 overflow-hidden backdrop-blur-sm p-0.5">
@@ -127,22 +209,22 @@ export function SellerMinhaMeta() {
           </div>
         </div>
 
-        {/* Projeção de Comissão */}
+        {/* Projeção Real de Comissão */}
         <div className="p-5 flex items-center justify-between bg-card">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center border border-amber-100">
               <DollarSign className="w-5 h-5 text-amber-600" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">
-                Projeção de Comissão (3%)
+              <p className="text-xs text-muted-foreground font-medium">
+                Comissão Acumulada
               </p>
               <p className="text-lg font-black text-foreground">
-                {fmt(estimatedCommission)}
+                {fmt(realCommission)}
               </p>
             </div>
           </div>
-          <TrendingUp className="w-5 h-5 text-muted-foreground opacity-30" />
+          <TrendingUp className="w-5 h-5 text-emerald-500 opacity-60" />
         </div>
       </div>
 
@@ -163,7 +245,7 @@ export function SellerMinhaMeta() {
             <Trophy className="w-4 h-4" />
           </div>
           <p className="text-2xl font-black text-foreground">
-            {seller.orders_count}
+            {validOrdersCount}
           </p>
           <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-semibold mt-1">
             Pedidos Feitos
@@ -173,7 +255,7 @@ export function SellerMinhaMeta() {
 
       <div className="bg-secondary/40 border border-border rounded-xl p-4 text-center mt-4">
         <p className="text-xs text-muted-foreground italic">
-          "A disciplina é a ponte entre metas e realizações."
+          "O sucesso é construído pedido a pedido."
         </p>
       </div>
     </div>
