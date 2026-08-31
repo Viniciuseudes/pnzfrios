@@ -7,6 +7,8 @@ import {
   ShoppingCart,
   ChevronRight,
   UserCheck,
+  Settings,
+  TrendingUp,
 } from "lucide-react";
 import {
   BarChart,
@@ -19,6 +21,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { SellerModal } from "@/components/ui/SellerModal";
+import { SellerHistoryModal } from "@/components/ui/SellerHistoryModal"; // <-- NOVO COMPONENTE
 import { supabase } from "@/utils/supabase";
 import { fmt } from "@/utils/format";
 import type { Seller } from "@/types";
@@ -26,21 +29,73 @@ import type { Seller } from "@/types";
 export function Vendedores() {
   const [dbSellers, setDbSellers] = useState<Seller[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
+
+  // Controle de Modais
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [selectedSeller, setSelectedSeller] = useState<Seller | null>(null);
 
   async function fetchSellers() {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("sellers")
-      .select("*")
-      .order("id", { ascending: true });
+    try {
+      const { data: sellersData, error: sellersError } = await supabase
+        .from("sellers")
+        .select("*")
+        .order("id", { ascending: true });
 
-    if (error) {
-      console.error("Erro ao buscar vendedores:", error);
-    } else {
-      setDbSellers(data as Seller[]);
+      if (sellersError) throw sellersError;
+
+      const now = new Date();
+      const startOfMonth = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        1,
+      ).toISOString();
+
+      const { data: ordersData, error: ordersError } = await supabase
+        .from("orders")
+        .select(
+          `
+          seller_id,
+          status,
+          order_items (qty, price)
+        `,
+        )
+        .gte("created_at", startOfMonth)
+        .neq("status", "cancelado")
+        .neq("status", "aguardando_pagamento");
+
+      if (ordersError) throw ordersError;
+
+      const realTimeSellers = sellersData.map((seller: any) => {
+        const myOrders = (ordersData || []).filter(
+          (o: any) => o.seller_id === seller.id,
+        );
+
+        const totalAchieved = myOrders.reduce(
+          (accOrder: number, order: any) => {
+            const orderSum = order.order_items.reduce(
+              (accItem: number, item: any) => accItem + item.qty * item.price,
+              0,
+            );
+            return accOrder + orderSum;
+          },
+          0,
+        );
+
+        return {
+          ...seller,
+          achieved: totalAchieved,
+          orders_count: myOrders.length,
+        };
+      });
+
+      setDbSellers(realTimeSellers as Seller[]);
+    } catch (error) {
+      console.error("Erro ao buscar dados do dashboard:", error);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   useEffect(() => {
@@ -55,10 +110,24 @@ export function Vendedores() {
 
   return (
     <>
-      {showModal && (
+      {showEditModal && (
         <SellerModal
-          onClose={() => setShowModal(false)}
+          seller={selectedSeller}
+          onClose={() => {
+            setShowEditModal(false);
+            setSelectedSeller(null);
+          }}
           onSuccess={fetchSellers}
+        />
+      )}
+
+      {showHistoryModal && selectedSeller && (
+        <SellerHistoryModal
+          seller={selectedSeller}
+          onClose={() => {
+            setShowHistoryModal(false);
+            setSelectedSeller(null);
+          }}
         />
       )}
 
@@ -69,11 +138,14 @@ export function Vendedores() {
               Equipe de Vendas
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Desempenho individual e metas
+              Desempenho individual e metas do mês atual
             </p>
           </div>
           <button
-            onClick={() => setShowModal(true)}
+            onClick={() => {
+              setSelectedSeller(null);
+              setShowEditModal(true);
+            }}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-[#163318] transition-colors shadow-sm flex-shrink-0"
           >
             <Plus className="w-4 h-4" /> Adicionar Vendedor
@@ -179,8 +251,7 @@ export function Vendedores() {
                             {s.name}
                           </p>
                           <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                            <MapPin className="w-3 h-3" />
-                            {s.region}
+                            <MapPin className="w-3 h-3" /> {s.region}
                           </p>
                         </div>
                       </div>
@@ -233,11 +304,30 @@ export function Vendedores() {
                     <div className="mt-4 pt-4 border-t border-border flex items-center justify-between text-xs">
                       <span className="flex items-center gap-1.5 text-muted-foreground font-medium">
                         <ShoppingCart className="w-3.5 h-3.5" />{" "}
-                        {s.orders_count} pedidos
+                        {s.orders_count} ordens
                       </span>
-                      <button className="flex items-center gap-1 text-primary hover:text-[#c8921c] font-bold transition-colors">
-                        Detalhes <ChevronRight className="w-3 h-3" />
-                      </button>
+
+                      {/* OS DOIS NOVOS BOTÕES */}
+                      <div className="flex items-center gap-4">
+                        <button
+                          onClick={() => {
+                            setSelectedSeller(s);
+                            setShowEditModal(true);
+                          }}
+                          className="flex items-center gap-1 text-muted-foreground hover:text-foreground font-semibold transition-colors"
+                        >
+                          <Settings className="w-3.5 h-3.5" /> Editar
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedSeller(s);
+                            setShowHistoryModal(true);
+                          }}
+                          className="flex items-center gap-1 text-primary hover:text-[#c8921c] font-bold transition-colors"
+                        >
+                          Histórico <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

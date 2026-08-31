@@ -24,6 +24,9 @@ import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
 import { useApp } from "@/contexts/AppContext";
 import { supabase } from "@/utils/supabase";
 
+// 1. IMPORT DO MOTOR DE PUSH
+import { usePushNotifications } from "@/hooks/usePushNotifications";
+
 const logoImg = "/logo.svg";
 
 const navItems: { href: string; label: string; icon: React.ElementType }[] = [
@@ -55,6 +58,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { logout, urgentActive } = useApp();
+
+  // 2. ATIVAÇÃO INVISÍVEL DAS NOTIFICAÇÕES PARA O ADMIN
+  // Pede a permissão e registra o Service Worker no Supabase como 'admin'
+  usePushNotifications();
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);

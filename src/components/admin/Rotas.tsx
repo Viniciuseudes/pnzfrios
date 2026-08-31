@@ -266,6 +266,35 @@ export function Rotas() {
 
       await supabase.from("route_stops").insert(stopsPayload);
 
+      // --- INÍCIO DO GATILHO DE NOTIFICAÇÃO PUSH ---
+      try {
+        // Apenas notifica o vendedor se a rota foi salva como "Ativa" (evita alertar rascunhos)
+        if (form.status === "Ativa") {
+          const baseUrl =
+            process.env.NEXT_PUBLIC_BASE_URL ||
+            (process.env.VERCEL_URL
+              ? `https://${process.env.VERCEL_URL}`
+              : "http://localhost:3000");
+          const routeDateFormatted = new Date(
+            form.date + "T00:00:00",
+          ).toLocaleDateString("pt-BR");
+
+          await fetch(`${baseUrl}/api/push/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              targetUserId: form.sellerId, // ID do vendedor selecionado
+              title: "Rota de Vendas Atribuida",
+              body: `A rota "${form.name}" foi programada para voce realizar em ${routeDateFormatted}. Clique para acessar o itinerario.`,
+              url: "/seller/rotas", // Deep Link direto para as rotas do vendedor
+            }),
+          });
+        }
+      } catch (pushErr) {
+        console.error("Falha ao enviar notificação push:", pushErr);
+      }
+      // --- FIM DO GATILHO ---
+
       await fetchData(); // Recarrega os dados reais do banco
       setMode("list");
     } catch (error) {

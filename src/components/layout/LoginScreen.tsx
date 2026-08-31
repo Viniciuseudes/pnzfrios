@@ -6,7 +6,7 @@ import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
 import { supabase } from "@/utils/supabase";
 import type { UserRole } from "@/types";
 
-const logoImg = "/logo.svg";
+const logoImg = "/logo.png";
 
 export function LoginScreen({
   onLogin,

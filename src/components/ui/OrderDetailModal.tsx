@@ -1,10 +1,23 @@
 "use client";
-
 import { useState } from "react";
 import { motion } from "motion/react";
-import { X, Zap, MapPin, User2, StickyNote, ChevronRight } from "lucide-react";
+import {
+  X,
+  Zap,
+  MapPin,
+  User2,
+  StickyNote,
+  ChevronRight,
+  FileText,
+  Download,
+  CheckCircle,
+  RefreshCw,
+  Wallet,
+  Copy,
+} from "lucide-react";
 import { colFor, nextStatus } from "@/utils/kanban";
 import { fmt } from "@/utils/format";
+import { supabase } from "@/utils/supabase";
 import type { KanbanOrder } from "@/types";
 
 export function OrderDetailModal({
@@ -15,7 +28,13 @@ export function OrderDetailModal({
   onAddNote,
   isAdmin,
 }: {
-  order: KanbanOrder;
+  order: KanbanOrder & {
+    nfeStatus?: string;
+    nfeUrl?: string;
+    nfeNumber?: string;
+    paymentUrl?: string;
+    paymentMethod?: string;
+  };
   onClose: () => void;
   onAdvance: (id: string, note: string) => void;
   onCancel: (id: string, note: string) => void;
@@ -24,6 +43,13 @@ export function OrderDetailModal({
 }) {
   const [note, setNote] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
+
+  // Estados para emissão e consulta da NFe
+  const [isEmittingNfe, setIsEmittingNfe] = useState(false);
+  const [isCheckingNfe, setIsCheckingNfe] = useState(false);
+  const [localNfeStatus, setLocalNfeStatus] = useState(order.nfeStatus);
+  const [localNfeUrl, setLocalNfeUrl] = useState(order.nfeUrl);
+
   const col = colFor(order.status) || {
     bg: "bg-gray-50",
     color: "text-gray-700",
@@ -34,10 +60,94 @@ export function OrderDetailModal({
   const next = nextStatus(order.status);
   const nextCol = next ? colFor(next) : null;
 
-  // AQUI ESTÁ A CORREÇÃO MESTRA: "em_rota" alterado para "rota"
   const canAdvance = isAdmin ? !!next : order.status === "rota";
   const canCancel =
     isAdmin && order.status !== "entregue" && order.status !== "cancelado";
+
+  async function handleEmitirNfe() {
+    if (
+      !confirm(
+        "Confirmar a emissão da Nota Fiscal Eletrônica para este pedido?",
+      )
+    )
+      return;
+
+    setIsEmittingNfe(true);
+    try {
+      const res = await fetch("/api/nfe/emitir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: order.id }),
+      });
+      const data = await res.json();
+
+      if (!res.ok)
+        throw new Error(data.error || "Erro desconhecido ao emitir NF-e");
+
+      const novoStatus = data.status === "EMITIDA" ? "EMITIDA" : "PROCESSANDO";
+      const novaUrl = data.nfe_url || "";
+
+      const { error: dbError } = await supabase
+        .from("orders")
+        .update({
+          nfe_status: novoStatus,
+          nfe_url: novaUrl,
+          nfe_number: data.nfe_number?.toString(),
+        })
+        .eq("id", order.id);
+
+      if (dbError) {
+        console.error("Erro ao salvar NFe no Supabase:", dbError);
+      }
+
+      setLocalNfeStatus(novoStatus);
+      setLocalNfeUrl(novaUrl);
+    } catch (err: any) {
+      console.error("Erro NFe:", err);
+      setLocalNfeStatus("ERRO");
+
+      await supabase
+        .from("orders")
+        .update({ nfe_status: "ERRO" })
+        .eq("id", order.id);
+
+      alert(`Falha na emissão da NF-e: ${err.message}`);
+    } finally {
+      setIsEmittingNfe(false);
+    }
+  }
+
+  async function handleCheckNfeStatus() {
+    setIsCheckingNfe(true);
+    try {
+      const res = await fetch("/api/nfe/consultar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: order.id }),
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        setLocalNfeStatus(data.status);
+        if (data.url) setLocalNfeUrl(data.url);
+
+        if (data.status === "ERRO") {
+          alert(
+            "A SEFAZ rejeitou a nota. Verifique o painel do ERP para corrigir.",
+          );
+        }
+      } else {
+        alert(
+          "Erro ao consultar status: " + (data.error || "Tente novamente."),
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Falha de comunicação ao consultar o status.");
+    } finally {
+      setIsCheckingNfe(false);
+    }
+  }
 
   return (
     <div
@@ -80,7 +190,7 @@ export function OrderDetailModal({
               </span>
               <span className="flex items-center gap-1">
                 <MapPin className="w-3 h-3" />
-                {order.deliveryAddress?.split("—")[1]?.trim() || "Sem endereço"}
+                {order.deliveryAddress?.split(" ")[1]?.trim() || "Sem endereço"}
               </span>
             </p>
           </div>
@@ -93,6 +203,112 @@ export function OrderDetailModal({
         </div>
 
         <div className="overflow-y-auto flex-1">
+          {isAdmin && order.status !== "cancelado" && (
+            <div className="px-5 py-4 border-b border-border bg-secondary/30">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-foreground">
+                      Nota Fiscal
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {localNfeStatus === "EMITIDA"
+                        ? "Documento autorizado"
+                        : localNfeStatus === "PROCESSANDO"
+                          ? "Aguardando SEFAZ"
+                          : "Emissão via Base ERP"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* RENDERIZAÇÃO INTELIGENTE DO BOTÃO */}
+                {localNfeStatus === "EMITIDA" ? (
+                  <a
+                    href={localNfeUrl || "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition-colors shadow-sm"
+                  >
+                    <CheckCircle className="w-3.5 h-3.5" /> PDF Gerado
+                  </a>
+                ) : localNfeStatus === "PROCESSANDO" ? (
+                  <button
+                    onClick={handleCheckNfeStatus}
+                    disabled={isCheckingNfe}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-yellow-500 text-white rounded-lg text-xs font-bold hover:bg-yellow-600 active:scale-95 transition-all shadow-sm disabled:opacity-50"
+                  >
+                    {isCheckingNfe ? (
+                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    {isCheckingNfe ? "Consultando..." : "Consultar SEFAZ"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleEmitirNfe}
+                    disabled={isEmittingNfe}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
+                  >
+                    {isEmittingNfe ? (
+                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      "Emitir NF-e"
+                    )}
+                  </button>
+                )}
+              </div>
+              {localNfeStatus === "ERRO" && (
+                <p className="text-[10px] text-red-500 mt-2 font-medium">
+                  ⚠️ Houve uma falha na última tentativa de emissão. A SEFAZ
+                  pode ter rejeitado.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* SEGUNDA VIA DE PAGAMENTO (Só aparece se o status for aguardando_pagamento) */}
+          {isAdmin && order.status === "aguardando_pagamento" && (
+            <div className="px-5 py-4 border-b border-border bg-orange-50/40">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600">
+                    <Wallet className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-orange-800">
+                      Pagamento Pendente
+                    </p>
+                    <p className="text-[10px] text-orange-600/80">
+                      Link via Asaas ({order.paymentMethod || "PIX/Boleto"})
+                    </p>
+                  </div>
+                </div>
+
+                {order.paymentUrl ? (
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(order.paymentUrl || "");
+                      alert(
+                        "Link de pagamento copiado! Cole no WhatsApp do cliente.",
+                      );
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 active:scale-95 transition-all shadow-sm"
+                  >
+                    <Copy className="w-3.5 h-3.5" /> Copiar Link (2ª Via)
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-orange-600 italic">
+                    Link não disponível no banco
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="px-5 py-3 border-b border-border">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
               Itens do Pedido
@@ -106,7 +322,7 @@ export function OrderDetailModal({
                   <span className="text-foreground">{item.name}</span>
                   <div className="flex items-center gap-3 text-muted-foreground">
                     <span className="font-mono text-xs">
-                      {item.qty}× {fmt(item.price)}
+                      {item.qty}x {fmt(item.price)}
                     </span>
                     <span className="font-semibold text-foreground">
                       {fmt(item.qty * item.price)}
@@ -175,11 +391,7 @@ export function OrderDetailModal({
                             {h.by}
                           </span>
                           <span className="text-[10px] text-muted-foreground/50 ml-auto">
-                            {h.time.split(" ")[1]} ·{" "}
-                            {new Date(h.time).toLocaleDateString("pt-BR", {
-                              day: "2-digit",
-                              month: "short",
-                            })}
+                            {h.time.split("T")[1]?.substring(0, 5) || ""}
                           </span>
                         </div>
                         {h.note && (
@@ -256,7 +468,7 @@ export function OrderDetailModal({
             <div className="flex-1 flex items-center justify-between">
               <span className="text-xs text-muted-foreground">
                 {order.status === "entregue"
-                  ? "✅ Ciclo finalizado com sucesso"
+                  ? "Ciclo finalizado com sucesso"
                   : "Pedido encerrado"}
               </span>
               {note && (

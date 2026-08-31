@@ -2,7 +2,7 @@ export type View = "dashboard" | "pedidos" | "clientes" | "produtos" | "vendedor
 export type SellerView = "home" | "catalogo" | "venda" | "rotas" | "meta" | "meuspedidos";
 
 // Status atualizados
-export type OrderStatus = "novo" | "preparando" | "rota" | "entregue" | "cancelado";
+export type OrderStatus = "aguardando_pagamento" | "novo" | "separacao" | "rota" | "entregue" | "cancelado";
 
 export type UserRole = "gestor" | "vendedor";
 
@@ -30,6 +30,13 @@ export interface KanbanOrder {
   notes: string;
   deliveryAddress: string;
   history: OrderHistoryEntry[];
+  asaasPaymentId?: string;
+  paymentMethod?: string;
+  paymentStatus?: string;
+  paymentUrl?: string;
+  nfeStatus?: string;
+  nfeUrl?: string;
+  nfeNumber?: string;
 }
 
 export interface Client {
@@ -46,6 +53,8 @@ export interface Client {
   complement?: string;
   neighborhood?: string;
   state?: string;
+  asaas_customer_id?: string;
+  base_erp_id?: string;
 }
 
 export interface Product {

@@ -7,13 +7,15 @@ import {
   Target,
   ShoppingCart,
   LogOut,
-  ClipboardList,
+  Users,
 } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
+import { usePushNotifications } from "@/hooks/usePushNotifications"; // <--- 1. IMPORT DO MOTOR DE PUSH
 
 const SELLER_NAV = [
   { href: "/seller/dashboard", label: "Início", icon: Home },
   { href: "/seller/vender", label: "Vender", icon: ShoppingCart },
+  { href: "/seller/clientes", label: "Carteira", icon: Users },
   { href: "/seller/rotas", label: "Rotas", icon: Navigation },
   { href: "/seller/meta", label: "Meta", icon: Target },
 ];
@@ -22,6 +24,10 @@ export function SellerShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useApp();
+
+  // <--- 2. ATIVAÇÃO INVISÍVEL DAS NOTIFICAÇÕES --->
+  // Assim que o vendedor logar e essa tela carregar, o sistema pede a permissão e inscreve o aparelho!
+  usePushNotifications();
 
   function handleLogout() {
     logout();
@@ -40,12 +46,12 @@ export function SellerShell({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Menu Inferior Mobile-First */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-card border-t border-border flex z-20 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.05)]">
+      <nav className="fixed bottom-0 left-0 right-0 bg-card border-t border-border flex z-20 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.05)] overflow-x-auto custom-scrollbar">
         {SELLER_NAV.map((n) => (
           <Link
             key={n.href}
             href={n.href}
-            className={`flex-1 flex flex-col items-center justify-center gap-1 py-3 px-1 transition-colors ${
+            className={`flex-1 flex flex-col items-center justify-center gap-1 py-3 px-1 transition-colors min-w-[64px] ${
               isActive(n.href)
                 ? "text-primary"
                 : "text-muted-foreground hover:text-foreground"

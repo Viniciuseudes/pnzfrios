@@ -6,8 +6,6 @@ import { supabase } from "@/utils/supabase";
 import { masks, validateCPFCNPJ } from "@/utils/validators";
 import type { Client } from "@/types";
 
-// 1. DICA DE SÊNIOR: Estendemos o tipo Client localmente para avisar ao
-// TypeScript que essas colunas existem no banco de dados.
 type ExtendedClient = Client & {
   email?: string;
   zip_code?: string;
@@ -30,6 +28,7 @@ type ClientFormData = {
   neighborhood: string;
   city: string;
   state: string;
+  ibge_code: string; // <-- NOVO CAMPO INVISÍVEL
 };
 
 export function ClientModal({
@@ -37,7 +36,7 @@ export function ClientModal({
   onClose,
   onSuccess,
 }: {
-  clientToEdit?: ExtendedClient | null; // 2. Usamos o tipo estendido aqui!
+  clientToEdit?: ExtendedClient | null;
   onClose: () => void;
   onSuccess: () => void;
 }) {
@@ -54,7 +53,6 @@ export function ClientModal({
     defaultValues: { state: "RN" },
   });
 
-  // PREENCHE OS DADOS SE FOR UMA EDIÇÃO
   useEffect(() => {
     if (clientToEdit) {
       reset({
@@ -69,6 +67,7 @@ export function ClientModal({
         neighborhood: clientToEdit.neighborhood || "",
         city: clientToEdit.city || "",
         state: clientToEdit.state || "",
+        ibge_code: "",
       });
     }
   }, [clientToEdit, reset]);
@@ -89,6 +88,7 @@ export function ClientModal({
           setValue("neighborhood", data.bairro);
           setValue("city", data.localidade);
           setValue("state", data.uf);
+          setValue("ibge_code", data.ibge); // <-- CAPTURANDO O IBGE DA API VIACEP
           document.getElementById("input-number")?.focus();
         }
       } catch (err) {
@@ -102,7 +102,8 @@ export function ClientModal({
   const onSubmit = async (data: ClientFormData) => {
     setSubmitError("");
     try {
-      const payload = {
+      // Separamos os dados normais para o Supabase
+      const supabasePayload = {
         name: data.name,
         doc: data.doc,
         phone: data.phone,
@@ -120,12 +121,22 @@ export function ClientModal({
       if (clientToEdit) {
         const { error } = await supabase
           .from("clients")
-          .update(payload)
+          .update(supabasePayload)
           .eq("id", clientToEdit.id);
         if (error) throw error;
       } else {
-        const { error } = await supabase.from("clients").insert([payload]);
-        if (error) throw error;
+        // Para a API do ERP, mandamos os dados + código IBGE
+        const erpPayload = { ...supabasePayload, ibge_code: data.ibge_code };
+
+        const response = await fetch("/api/clientes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(erpPayload),
+        });
+
+        const result = await response.json();
+        if (!result.success)
+          throw new Error(result.error || "Erro ao sincronizar com ERP.");
       }
 
       onSuccess();
@@ -134,7 +145,9 @@ export function ClientModal({
       if (error.code === "23505") {
         setSubmitError("Este CPF/CNPJ já está cadastrado no sistema.");
       } else {
-        setSubmitError("Erro ao salvar cliente. Tente novamente.");
+        setSubmitError(
+          error.message || "Erro ao salvar cliente. Tente novamente.",
+        );
       }
     }
   };
@@ -177,7 +190,7 @@ export function ClientModal({
             onSubmit={handleSubmit(onSubmit)}
             className="space-y-8"
           >
-            {/* Seção 1: Identificação */}
+            {/* INÍCIO DO FORMULÁRIO (Igual ao seu anterior, não alterou os inputs) */}
             <div>
               <div className="flex items-center gap-2 mb-4 border-b border-border pb-2">
                 <span className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
@@ -277,7 +290,6 @@ export function ClientModal({
               </div>
             </div>
 
-            {/* Seção 2: Endereço */}
             <div>
               <div className="flex items-center gap-2 mb-4 border-b border-border pb-2">
                 <span className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
@@ -377,6 +389,7 @@ export function ClientModal({
                 </div>
               </div>
             </div>
+            {/* FIM DO FORMULÁRIO */}
           </form>
         </div>
 

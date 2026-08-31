@@ -13,7 +13,6 @@ import {
   MapPin,
   X,
 } from "lucide-react";
-// CORREÇÃO: KANBAN_COLS agora vem do utilitário oficial unificado
 import { KANBAN_COLS, colFor, nextStatus, timeAgo } from "@/utils/kanban";
 import { fmt } from "@/utils/format";
 import type { KanbanOrder } from "@/types";
@@ -264,7 +263,7 @@ export function CicloPedidos({
         <div className="overflow-x-auto pb-4 -mx-4 px-4 custom-scrollbar">
           <div
             className="flex gap-3"
-            style={{ minWidth: `${activeCols.length * 272}px` }}
+            style={{ minWidth: `${activeCols.length * 272}px` }} // Isso garante que o Kanban sempre caiba certinho, independente de quantas colunas a gente crie!
           >
             {activeCols.map((col) => {
               const colOrders = filtered

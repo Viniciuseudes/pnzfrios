@@ -29,7 +29,6 @@ type ProductFormData = {
   batch_number: string;
   manufacturing_date: string;
   expiration_date: string;
-  // CAMPOS DE COMISSÃO
   commission_type: "fixed" | "percentage";
   commission_value: string;
 };
@@ -100,7 +99,6 @@ export function ProductModal({
         batch_number: productToEdit.batch_number || "",
         manufacturing_date: productToEdit.manufacturing_date || "",
         expiration_date: productToEdit.expiration_date || "",
-        // CARREGA COMISSÃO
         commission_type: productToEdit.commission_type || "percentage",
         commission_value: productToEdit.commission_value
           ? productToEdit.commission_value.toFixed(2).replace(".", ",")
@@ -190,14 +188,25 @@ export function ProductModal({
       };
 
       if (productToEdit) {
+        // Se for edição, apenas atualiza no banco de dados local
         const { error } = await supabase
           .from("products")
           .update(payload)
           .eq("id", productToEdit.id);
         if (error) throw error;
       } else {
-        const { error } = await supabase.from("products").insert([payload]);
-        if (error) throw error;
+        // Se for novo, usa a API de Sincronização (Supabase + Base ERP)
+        const response = await fetch("/api/produtos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        const result = await response.json();
+        if (!result.success)
+          throw new Error(
+            result.error || "Erro ao sincronizar produto com ERP.",
+          );
       }
 
       onSuccess();
@@ -471,7 +480,6 @@ export function ProductModal({
                   </select>
                 </div>
 
-                {/* === CAIXA DE COMISSÃO DESTAQUE === */}
                 <div className="sm:col-span-2 bg-blue-50/60 p-4 rounded-xl border border-blue-200">
                   <label className="block text-xs font-bold text-blue-900 uppercase tracking-wider mb-2">
                     Comissão do Vendedor
