@@ -6,8 +6,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const ERP_URL = "https://api-sandbox.baseerp.com.br";
-const ERP_KEY = "$aeact_hmlg_000MzkwODA2MWY2OGM3MWRlMDU2NWM3MzJlNzZmNGZhZGY6Ojg1M2JiZWMyLWYzNzItNDExNC04MmIwLTg1M2UxMWE3YTRjOTo6JGFlYWNoX2MyODNjYTIyLTE3ZDYtNDgwNi1hMDI0LTAyMDQ5YjMyN2RlNw==";
+const ERP_URL = process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br";
+const ERP_KEY = process.env.BASE_ERP_API_KEY!;
 
 export async function POST(req: Request) {
   try {

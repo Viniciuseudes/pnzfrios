@@ -27,7 +27,7 @@ import { supabase } from "@/utils/supabase";
 // 1. IMPORT DO MOTOR DE PUSH
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 
-const logoImg = "/logo.svg";
+const logoImg = "/logo.png";
 
 const navItems: { href: string; label: string; icon: React.ElementType }[] = [
   { href: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },

@@ -6,7 +6,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const ERP_URL = "https://api-sandbox.baseerp.com.br";
+const ERP_URL = process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br";
 const ERP_KEY = process.env.BASE_ERP_API_KEY!;
 
 async function fetchWithRetry(url: string, options: RequestInit, retries = 3, delay = 2000) {
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
       }),
       orderPayments: [
         {
-          bankId: 100631112, // <--- NÃO ESQUEÇA O ID DO SEU CAIXA AQUI!
+          bankId: process.env.BASE_ERP_BANK_ID ? Number(process.env.BASE_ERP_BANK_ID) : 100631112, 
           billingType: "UNDEFINED", 
           dueDate: today,
           value: orderTotal,

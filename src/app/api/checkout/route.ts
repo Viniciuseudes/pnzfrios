@@ -6,7 +6,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const ASAAS_URL = "https://sandbox.asaas.com/api/v3";
+const ASAAS_URL = process.env.ASAAS_API_URL || "https://sandbox.asaas.com/api/v3";
 const ASAAS_KEY = process.env.ASAAS_API_KEY!;
 
 export async function POST(req: Request) {

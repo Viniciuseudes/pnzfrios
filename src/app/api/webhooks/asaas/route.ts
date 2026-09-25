@@ -9,6 +9,16 @@ const supabase = createClient(
 
 export async function POST(req: Request) {
   try {
+    // --- INÍCIO DA TRAVA DE SEGURANÇA ---
+    const asaasToken = req.headers.get('asaas-access-token');
+    
+    // Verifica se o token enviado na requisição bate com a variável de ambiente salva na Vercel
+    if (!asaasToken || asaasToken !== process.env.ASAAS_WEBHOOK_TOKEN) {
+      console.error("Tentativa de acesso não autorizado ao webhook do Asaas.");
+      return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+    }
+    // --- FIM DA TRAVA DE SEGURANÇA ---
+
     const body = await req.json();
 
     // O Asaas dispara vários eventos, mas só nos interessa quando o pagamento é recebido ou confirmado

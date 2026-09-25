@@ -6,8 +6,8 @@ self.addEventListener('push', function (event) {
     
     const options = {
       body: data.body,
-      icon: '/logo.svg', // O ícone do seu app
-      badge: '/logo.svg', // O ícone pequeno que fica na barra de status do Android
+      icon: '/logo.png', // O ícone do seu app
+      badge: '/logo.png', // O ícone pequeno que fica na barra de status do Android
       vibrate: [200, 100, 200, 100, 200], // Vibração personalizada
       data: {
         url: data.url || '/' // A URL mágica (Deep Link) que vamos mandar do backend
