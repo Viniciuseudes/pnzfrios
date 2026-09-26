@@ -9,7 +9,6 @@ import {
   StickyNote,
   ChevronRight,
   FileText,
-  Download,
   CheckCircle,
   RefreshCw,
   Wallet,
@@ -127,23 +126,26 @@ export function OrderDetailModal({
       });
       const data = await res.json();
 
-      if (res.ok) {
-        setLocalNfeStatus(data.status);
-        if (data.url) setLocalNfeUrl(data.url);
-
-        if (data.status === "ERRO") {
-          alert(
-            "A SEFAZ rejeitou a nota. Verifique o painel do ERP para corrigir.",
-          );
-        }
-      } else {
-        alert(
-          "Erro ao consultar status: " + (data.error || "Tente novamente."),
-        );
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Erro ao consultar status na SEFAZ.");
       }
-    } catch (err) {
-      console.error(err);
-      alert("Falha de comunicação ao consultar o status.");
+
+      setLocalNfeStatus(data.status);
+      if (data.url) setLocalNfeUrl(data.url);
+
+      if (data.status === "EMITIDA") {
+        alert("Nota Fiscal autorizada com sucesso!");
+        window.location.reload();
+      } else if (data.status === "ERRO") {
+        alert(
+          "A SEFAZ rejeitou a nota. Verifique o painel do ERP para corrigir.",
+        );
+      } else {
+        alert("A nota ainda está em processamento na SEFAZ.");
+      }
+    } catch (err: any) {
+      console.error("Erro detalhado na consulta:", err);
+      alert(`Falha ao consultar SEFAZ: ${err.message}`);
     } finally {
       setIsCheckingNfe(false);
     }
@@ -270,7 +272,7 @@ export function OrderDetailModal({
             </div>
           )}
 
-          {/* SEGUNDA VIA DE PAGAMENTO (Só aparece se o status for aguardando_pagamento) */}
+          {/* SEGUNDA VIA DE PAGAMENTO */}
           {isAdmin && order.status === "aguardando_pagamento" && (
             <div className="px-5 py-4 border-b border-border bg-orange-50/40">
               <div className="flex items-center justify-between">
