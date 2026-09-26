@@ -13,25 +13,26 @@ export async function POST(req: Request) {
   try {
     const { orderId } = await req.json();
 
-    // 1. Buscamos o Pedido de Venda no Base ERP usando o ID do nosso sistema
-    const searchRes = await fetch(`${ERP_URL}/api/v1/salesOrders?externalReference=${orderId}`, {
-      headers: { 'access_token': ERP_KEY }
-    });
-    const searchData = await searchRes.json();
-    
-    if (!searchData || !searchData.data || searchData.data.length === 0) {
-      throw new Error("Pedido não encontrado no ERP.");
+    // 1. Buscamos o base_erp_order_id diretamente no Supabase
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('base_erp_order_id')
+      .eq('id', orderId)
+      .single();
+
+    if (orderErr || !order?.base_erp_order_id) {
+      throw new Error("ID do ERP não associado a este pedido. Tente emitir novamente.");
     }
 
-    const baseErpOrderId = searchData.data[0].id;
+    const baseErpOrderId = order.base_erp_order_id;
 
-    // 2. Consultamos o status atual da Nota Fiscal desse pedido
+    // 2. Consultamos o status atual da Nota Fiscal usando o ID exato
     const invoiceRes = await fetch(`${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}/invoice`, {
       headers: { 'access_token': ERP_KEY }
     });
     const invoiceData = await invoiceRes.json();
 
-    // 3. Analisamos a resposta (O Base ERP usa diversas nomenclaturas dependendo do estado)
+    // 3. Analisamos a resposta
     let novoStatus = 'PROCESSANDO';
     const statusAtual = invoiceData.invoiceStatus || invoiceData.status || '';
 
@@ -41,7 +42,6 @@ export async function POST(req: Request) {
         novoStatus = 'ERRO';
     }
 
-    // Buscamos a URL do PDF na resposta
     const pdfUrl = invoiceData.pdfUrl || invoiceData.invoicePdfUrl || invoiceData.publicUrl || invoiceData.documentUrl || "";
 
     // 4. Atualizamos o Supabase com o resultado

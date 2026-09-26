@@ -49,7 +49,7 @@ export async function POST(req: Request) {
 
     const createOrderPayload = {
       issueDate: today,
-      customerId: Number(client.base_erp_id), // <-- ID DINÂMICO VOLTOU!
+      customerId: Number(client.base_erp_id),
       externalReference: order.id.toString(),
       orderItems: order.order_items.map((item: any) => {
         const product = Array.isArray(item.products) ? item.products[0] : item.products;
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
       }),
       orderPayments: [
         {
-          bankId: process.env.BASE_ERP_BANK_ID ? Number(process.env.BASE_ERP_BANK_ID) : 100631112, 
+          bankId: process.env.BASE_ERP_BANK_ID ? Number(process.env.BASE_ERP_BANK_ID) : 100129450, 
           billingType: "UNDEFINED", 
           dueDate: today,
           value: orderTotal,
@@ -89,6 +89,11 @@ export async function POST(req: Request) {
     }
 
     const baseErpOrderId = createOrderData.id;
+
+    // Guarda o ID direto do ERP na base de dados para consultas futuras precisas
+    await supabase.from('orders').update({
+      base_erp_order_id: baseErpOrderId.toString()
+    }).eq('id', orderId);
 
     const invoiceRes = await fetchWithRetry(`${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}/invoice`, {
       method: 'POST',
