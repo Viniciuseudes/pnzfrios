@@ -6,7 +6,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const ERP_URL = process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br";
+const ERP_URL = (process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br").replace(/\/$/, "");
 const ERP_KEY = process.env.BASE_ERP_API_KEY!;
 
 export async function POST(req: Request) {
@@ -28,14 +28,17 @@ export async function POST(req: Request) {
     if (orderErr || !order?.base_erp_order_id) {
       return NextResponse.json({ 
         success: false, 
-        error: "Este pedido ainda não tem um ID do ERP associado. Emita a NF-e novamente." 
+        error: "Este pedido não possui ID do ERP associado." 
       }, { status: 400 });
     }
 
     const baseErpOrderId = order.base_erp_order_id;
 
-    // 2. Consulta o ERP enviando explicitamente os headers de autenticação e Content-Type
-    const invoiceRes = await fetch(`${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}/invoice`, {
+    // 2. Conforme a documentação oficial (Recuperar um único pedido via GET)
+    const targetUrl = `${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}`;
+    console.log(`🔍 [API Consultar] A consultar pedido no ERP: ${targetUrl}`);
+
+    const response = await fetch(targetUrl, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -43,26 +46,27 @@ export async function POST(req: Request) {
       }
     });
 
-    const invoiceData = await invoiceRes.json().catch(() => null);
+    const responseData = await response.json().catch(() => null);
 
-    if (!invoiceRes.ok) {
+    if (!response.ok) {
       return NextResponse.json({ 
         success: false, 
-        error: `Erro no ERP (${invoiceRes.status}): ${invoiceData ? JSON.stringify(invoiceData) : 'Sem resposta válida'}` 
+        error: `Erro no ERP (${response.status}): ${responseData?.message || JSON.stringify(responseData)}` 
       }, { status: 500 });
     }
 
-    // 3. Mapeia o status retornado
-    let novoStatus = 'PROCESSANDO';
-    const statusAtual = invoiceData?.invoiceStatus || invoiceData?.status || '';
+    // 3. Extrai o status da NF-e e o PDF de dentro do objeto do pedido retornado pelo ERP
+    // (Ajuste as propriedades abaixo conforme o JSON exato que o Base ERP devolve no GET /salesOrders/{id})
+    const nfeInfo = responseData?.invoice || responseData?.nfe || responseData;
+    const statusAtual = nfeInfo?.invoiceStatus || nfeInfo?.status || nfeInfo?.nfeStatus || 'PROCESSANDO';
+    const pdfUrl = nfeInfo?.pdfUrl || nfeInfo?.invoicePdfUrl || nfeInfo?.publicUrl || "";
 
-    if (statusAtual === 'EMITIDA' || statusAtual === 'AUTHORIZED') {
+    let novoStatus = 'PROCESSANDO';
+    if (['EMITIDA', 'AUTHORIZED', 'APPROVED', 'AUTORIZADA'].includes(statusAtual.toUpperCase())) {
         novoStatus = 'EMITIDA';
-    } else if (statusAtual === 'ERRO' || statusAtual === 'DENIED' || statusAtual === 'REJECTED') {
+    } else if (['ERRO', 'DENIED', 'REJECTED', 'REJEITADA'].includes(statusAtual.toUpperCase())) {
         novoStatus = 'ERRO';
     }
-
-    const pdfUrl = invoiceData?.pdfUrl || invoiceData?.invoicePdfUrl || invoiceData?.publicUrl || invoiceData?.documentUrl || "";
 
     // 4. Atualiza no Supabase
     await supabase
