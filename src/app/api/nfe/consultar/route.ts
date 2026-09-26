@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     const orderId = body?.orderId;
 
     if (!orderId) {
-      return NextResponse.json({ success: false, error: "ID do pedido não fornecido na requisição." }, { status: 400 });
+      return NextResponse.json({ success: false, error: "ID do pedido não fornecido." }, { status: 400 });
     }
 
     // 1. Busca o base_erp_order_id no Supabase
@@ -25,22 +25,22 @@ export async function POST(req: Request) {
       .eq('id', orderId)
       .single();
 
-    if (orderErr) {
-      return NextResponse.json({ success: false, error: `Erro na base de dados: ${orderErr.message}` }, { status: 500 });
-    }
-
-    if (!order?.base_erp_order_id) {
+    if (orderErr || !order?.base_erp_order_id) {
       return NextResponse.json({ 
         success: false, 
-        error: "Este pedido ainda não tem um ID do ERP associado. Por favor, clique em 'Emitir NF-e' primeiro." 
+        error: "Este pedido ainda não tem um ID do ERP associado. Emita a NF-e novamente." 
       }, { status: 400 });
     }
 
     const baseErpOrderId = order.base_erp_order_id;
 
-    // 2. Consulta o ERP
+    // 2. Consulta o ERP enviando explicitamente os headers de autenticação e Content-Type
     const invoiceRes = await fetch(`${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}/invoice`, {
-      headers: { 'access_token': ERP_KEY }
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'access_token': ERP_KEY
+      }
     });
 
     const invoiceData = await invoiceRes.json().catch(() => null);
@@ -48,11 +48,11 @@ export async function POST(req: Request) {
     if (!invoiceRes.ok) {
       return NextResponse.json({ 
         success: false, 
-        error: `Erro no ERP (${invoiceRes.status}): ${invoiceData ? JSON.stringify(invoiceData) : 'Sem resposta do ERP'}` 
+        error: `Erro no ERP (${invoiceRes.status}): ${invoiceData ? JSON.stringify(invoiceData) : 'Sem resposta válida'}` 
       }, { status: 500 });
     }
 
-    // 3. Analisa o status retornado
+    // 3. Mapeia o status retornado
     let novoStatus = 'PROCESSANDO';
     const statusAtual = invoiceData?.invoiceStatus || invoiceData?.status || '';
 
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
 
     const pdfUrl = invoiceData?.pdfUrl || invoiceData?.invoicePdfUrl || invoiceData?.publicUrl || invoiceData?.documentUrl || "";
 
-    // 4. Atualiza o Supabase
+    // 4. Atualiza no Supabase
     await supabase
       .from('orders')
       .update({ 
