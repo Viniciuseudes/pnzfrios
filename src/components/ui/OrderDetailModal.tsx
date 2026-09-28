@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Wallet,
   Copy,
+  AlertTriangle,
 } from "lucide-react";
 import { colFor, nextStatus } from "@/utils/kanban";
 import { fmt } from "@/utils/format";
@@ -43,11 +44,15 @@ export function OrderDetailModal({
   const [note, setNote] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
 
-  // Estados para emissão e consulta da NFe
   const [isEmittingNfe, setIsEmittingNfe] = useState(false);
   const [isCheckingNfe, setIsCheckingNfe] = useState(false);
   const [localNfeStatus, setLocalNfeStatus] = useState(order.nfeStatus);
   const [localNfeUrl, setLocalNfeUrl] = useState(order.nfeUrl);
+
+  const [isNcmModalOpen, setIsNcmModalOpen] = useState(false);
+  const [itemsMissingNcm, setItemsMissingNcm] = useState<any[]>([]);
+  const [ncmValues, setNcmValues] = useState<Record<string, string>>({});
+  const [isSavingNcm, setIsSavingNcm] = useState(false);
 
   const col = colFor(order.status) || {
     bg: "bg-gray-50",
@@ -63,7 +68,7 @@ export function OrderDetailModal({
   const canCancel =
     isAdmin && order.status !== "entregue" && order.status !== "cancelado";
 
-  async function handleEmitirNfe() {
+  async function handlePrepararEmissao() {
     if (
       !confirm(
         "Confirmar a emissão da Nota Fiscal Eletrônica para este pedido?",
@@ -72,6 +77,74 @@ export function OrderDetailModal({
       return;
 
     setIsEmittingNfe(true);
+    try {
+      const { data: orderDetails, error } = await supabase
+        .from("order_items")
+        .select(
+          `
+          id, 
+          product_id, 
+          products ( id, name, ncm )
+        `,
+        )
+        .eq("order_id", order.id);
+
+      if (error) throw error;
+
+      const missing = (orderDetails || []).filter(
+        (item: any) =>
+          !item.products?.ncm ||
+          item.products.ncm.replace(/\D/g, "").length < 8,
+      );
+
+      if (missing.length > 0) {
+        setItemsMissingNcm(missing);
+        setIsNcmModalOpen(true);
+        setIsEmittingNfe(false);
+        return;
+      }
+
+      await processNfeEmission();
+    } catch (err: any) {
+      console.error("Erro ao verificar itens do pedido:", err);
+      alert("Erro ao validar os produtos. Verifique sua conexão.");
+      setIsEmittingNfe(false);
+    }
+  }
+
+  async function handleSaveNcmAndEmit() {
+    const invalid = itemsMissingNcm.some(
+      (item) => (ncmValues[item.product_id] || "").length !== 8,
+    );
+    if (invalid) {
+      alert(
+        "Por favor, preencha todos os campos de NCM com exatamente 8 dígitos.",
+      );
+      return;
+    }
+
+    setIsSavingNcm(true);
+    try {
+      for (const item of itemsMissingNcm) {
+        await supabase
+          .from("products")
+          .update({ ncm: ncmValues[item.product_id] })
+          .eq("id", item.product_id);
+      }
+
+      setIsNcmModalOpen(false);
+      setIsEmittingNfe(true);
+
+      await processNfeEmission();
+    } catch (err) {
+      console.error("Erro ao salvar NCMs:", err);
+      alert("Falha ao salvar os dados fiscais. Tente novamente.");
+    } finally {
+      setIsSavingNcm(false);
+    }
+  }
+
+  async function processNfeEmission() {
     try {
       const res = await fetch("/api/nfe/emitir", {
         method: "POST",
@@ -86,7 +159,7 @@ export function OrderDetailModal({
       const novoStatus = data.status === "EMITIDA" ? "EMITIDA" : "PROCESSANDO";
       const novaUrl = data.nfe_url || "";
 
-      const { error: dbError } = await supabase
+      await supabase
         .from("orders")
         .update({
           nfe_status: novoStatus,
@@ -95,21 +168,15 @@ export function OrderDetailModal({
         })
         .eq("id", order.id);
 
-      if (dbError) {
-        console.error("Erro ao salvar NFe no Supabase:", dbError);
-      }
-
       setLocalNfeStatus(novoStatus);
       setLocalNfeUrl(novaUrl);
     } catch (err: any) {
       console.error("Erro NFe:", err);
       setLocalNfeStatus("ERRO");
-
       await supabase
         .from("orders")
         .update({ nfe_status: "ERRO" })
         .eq("id", order.id);
-
       alert(`Falha na emissão da NF-e: ${err.message}`);
     } finally {
       setIsEmittingNfe(false);
@@ -160,9 +227,85 @@ export function OrderDetailModal({
         initial={{ opacity: 0, scale: 0.95, y: 16 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ duration: 0.25 }}
-        className="bg-card w-full max-w-lg rounded-2xl shadow-2xl border border-border overflow-hidden max-h-[90vh] flex flex-col"
+        className="relative bg-card w-full max-w-lg rounded-2xl shadow-2xl border border-border overflow-hidden max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
+        {isNcmModalOpen && (
+          <div className="absolute inset-0 z-[60] bg-card flex flex-col">
+            <div className="px-5 py-4 border-b border-border flex items-center justify-between bg-yellow-50/50">
+              <div className="flex items-center gap-2 text-yellow-800">
+                <AlertTriangle className="w-5 h-5" />
+                <h3 className="text-sm font-bold">Dados Fiscais Pendentes</h3>
+              </div>
+              <button
+                onClick={() => setIsNcmModalOpen(false)}
+                className="p-1 hover:bg-yellow-100 rounded-md transition-colors"
+              >
+                <X className="w-4 h-4 text-yellow-800" />
+              </button>
+            </div>
+
+            <div className="p-5 flex-1 overflow-y-auto space-y-4">
+              <p className="text-xs text-muted-foreground mb-4">
+                Para emitir a nota fiscal, a SEFAZ exige a classificação NCM dos
+                produtos. Preencha os códigos de 8 dígitos abaixo (eles serão
+                salvos para as próximas vendas):
+              </p>
+
+              <div className="space-y-4">
+                {itemsMissingNcm.map((item) => (
+                  <div
+                    key={item.id}
+                    className="bg-secondary/20 p-3 rounded-lg border border-border"
+                  >
+                    <label className="text-sm font-semibold text-foreground">
+                      {item.products.name}
+                    </label>
+                    <input
+                      type="text"
+                      value={ncmValues[item.product_id] || ""}
+                      onChange={(e) => {
+                        const val = e.target.value
+                          .replace(/\D/g, "")
+                          .slice(0, 8);
+                        setNcmValues({ ...ncmValues, [item.product_id]: val });
+                      }}
+                      placeholder="Ex: 02071100"
+                      className="mt-2 w-full px-3 py-2 border border-border rounded-md text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      maxLength={8}
+                    />
+                    {(ncmValues[item.product_id] || "").length > 0 &&
+                      (ncmValues[item.product_id] || "").length < 8 && (
+                        <span className="text-[10px] text-red-500 mt-1 block">
+                          Faltam {8 - (ncmValues[item.product_id] || "").length}{" "}
+                          dígitos
+                        </span>
+                      )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-border flex gap-2 bg-secondary/10">
+              <button
+                onClick={() => setIsNcmModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-muted-foreground hover:bg-secondary rounded-xl transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveNcmAndEmit}
+                disabled={isSavingNcm}
+                className="flex-1 flex items-center justify-center bg-primary text-primary-foreground font-bold text-xs rounded-xl py-2 hover:bg-[#163318] transition-colors disabled:opacity-50"
+              >
+                {isSavingNcm
+                  ? "Salvando e Emitindo..."
+                  : "Salvar e Emitir NF-e"}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className={`h-1.5 w-full ${col.dot}`} />
         <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-border">
           <div>
@@ -226,7 +369,6 @@ export function OrderDetailModal({
                   </div>
                 </div>
 
-                {/* RENDERIZAÇÃO INTELIGENTE DO BOTÃO */}
                 {localNfeStatus === "EMITIDA" ? (
                   <a
                     href={localNfeUrl || "#"}
@@ -251,7 +393,7 @@ export function OrderDetailModal({
                   </button>
                 ) : (
                   <button
-                    onClick={handleEmitirNfe}
+                    onClick={handlePrepararEmissao}
                     disabled={isEmittingNfe}
                     className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
                   >
@@ -272,7 +414,6 @@ export function OrderDetailModal({
             </div>
           )}
 
-          {/* SEGUNDA VIA DE PAGAMENTO */}
           {isAdmin && order.status === "aguardando_pagamento" && (
             <div className="px-5 py-4 border-b border-border bg-orange-50/40">
               <div className="flex items-center justify-between">
