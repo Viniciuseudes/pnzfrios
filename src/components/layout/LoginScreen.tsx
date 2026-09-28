@@ -1,7 +1,6 @@
 "use client";
-import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "motion/react";
-import { KeyRound } from "lucide-react";
+import { useState } from "react";
+import { motion } from "motion/react";
 import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
 import { supabase } from "@/utils/supabase";
 import type { UserRole } from "@/types";
@@ -17,17 +16,6 @@ export function LoginScreen({
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [showCreds, setShowCreds] = useState(false);
-
-  const [demoAccounts, setDemoAccounts] = useState<any[]>([]);
-
-  useEffect(() => {
-    async function fetchAccounts() {
-      const { data } = await supabase.from("accounts").select("*").limit(5);
-      if (data) setDemoAccounts(data);
-    }
-    fetchAccounts();
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -54,9 +42,7 @@ export function LoginScreen({
 
       setTimeout(() => {
         setLoading(false);
-        // CORREÇÃO CRÍTICA: Força o texto para minúsculo para bater com a tipagem ("vendedor" ou "gestor")
         const safeRole = String(acc.role).toLowerCase() as UserRole;
-        // Puxa o ID do vendedor cobrindo os padrões de nomenclatura do Supabase
         const safeSellerId = acc.seller_id || acc.sellerId || undefined;
 
         onLogin(safeRole, safeSellerId);
@@ -66,12 +52,6 @@ export function LoginScreen({
       setError("Erro ao conectar no servidor.");
       setLoading(false);
     }
-  }
-
-  function quickFill(acc: any) {
-    setEmail(acc.email);
-    setPassword(acc.password_hash);
-    setShowCreds(false);
   }
 
   return (
@@ -303,73 +283,6 @@ export function LoginScreen({
             </button>
           </form>
         </motion.div>
-
-        {demoAccounts.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 1 }}
-            className="mt-4"
-          >
-            <button
-              onClick={() => setShowCreds((v) => !v)}
-              className="w-full flex items-center justify-center gap-1.5 text-xs text-white/30 hover:text-white/60 transition-colors py-1"
-            >
-              <KeyRound className="w-3 h-3" />
-              {showCreds ? "Ocultar" : "Ver"} contas cadastradas
-            </button>
-            <AnimatePresence>
-              {showCreds && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden mt-3 rounded-xl"
-                  style={{
-                    background: "rgba(0,0,0,0.35)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                  }}
-                >
-                  <div className="p-3 space-y-1">
-                    <p className="text-[10px] text-white/30 uppercase tracking-widest mb-2 font-semibold">
-                      Clique para preencher (Modo Dev)
-                    </p>
-                    {demoAccounts.map((acc) => (
-                      <button
-                        key={acc.email}
-                        onClick={() => quickFill(acc)}
-                        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors text-left"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0 ${acc.role.toLowerCase() === "gestor" ? "bg-[#c8921c]" : "bg-[#1e4023]"}`}
-                          >
-                            {acc.avatar}
-                          </span>
-                          <div>
-                            <p className="text-xs text-white/80 font-medium leading-none">
-                              {acc.name}
-                            </p>
-                            <p className="text-[10px] text-white/30 mt-0.5">
-                              {acc.email}
-                            </p>
-                          </div>
-                        </div>
-                        <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${acc.role.toLowerCase() === "gestor" ? "bg-[#c8921c]/20 text-[#c8921c]" : "bg-emerald-900/40 text-emerald-400"}`}
-                        >
-                          {acc.role.toLowerCase() === "gestor"
-                            ? "Gestor"
-                            : "Vendedor"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        )}
       </motion.div>
     </div>
   );
