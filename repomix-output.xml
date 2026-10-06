@@ -304,51 +304,6 @@ or initiating processes. They communicate interactivity and should have clear, a
 -->
 </file>
 
-<file path="public/sw.js">
-// public/sw.js
-
-self.addEventListener('push', function (event) {
-  if (event.data) {
-    const data = event.data.json();
-    
-    const options = {
-      body: data.body,
-      icon: '/logo.png', // O ícone do seu app
-      badge: '/logo.png', // O ícone pequeno que fica na barra de status do Android
-      vibrate: [200, 100, 200, 100, 200], // Vibração personalizada
-      data: {
-        url: data.url || '/' // A URL mágica (Deep Link) que vamos mandar do backend
-      }
-    };
-
-    event.waitUntil(
-      self.registration.showNotification(data.title, options)
-    );
-  }
-});
-
-self.addEventListener('notificationclick', function (event) {
-  event.notification.close(); // Fecha a notificação
-  
-  // Abre a URL que mandamos no payload (ex: /seller/rotas ou /admin/pedidos)
-  event.waitUntil(
-    clients.matchAll({ type: 'window' }).then((windowClients) => {
-      // Se o app já estiver aberto, foca nele e navega
-      for (let i = 0; i < windowClients.length; i++) {
-        const client = windowClients[i];
-        if (client.url === event.notification.data.url && 'focus' in client) {
-          return client.focus();
-        }
-      }
-      // Se estiver fechado, abre uma nova janela
-      if (clients.openWindow) {
-        return clients.openWindow(event.notification.data.url);
-      }
-    })
-  );
-});
-</file>
-
 <file path="src/app/(admin)/admin/clientes/page.tsx">
 "use client";
 
@@ -468,508 +423,6 @@ export default function VenderPage() {
 }
 </file>
 
-<file path="src/app/api/checkout/route.ts">
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-const ASAAS_URL = "https://sandbox.asaas.com/api/v3";
-const ASAAS_KEY = process.env.ASAAS_API_KEY!;
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const { orderId, clientId, billingType, totalValue, dueDate, installments } = body;
-
-    // 1. Busca os dados COMPLETOS do Cliente no Supabase
-    const { data: client, error: clientErr } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('id', clientId)
-      .single();
-
-    if (clientErr || !client) throw new Error("Cliente não encontrado no banco de dados.");
-
-    let asaasCustomerId = client.asaas_customer_id;
-
-    // 2. Se o cliente ainda não existe no Asaas, cria enviando o ENDEREÇO
-    if (!asaasCustomerId) {
-      const cleanDoc = client.doc ? client.doc.replace(/\D/g, '') : '';
-      const cleanPhone = client.phone ? client.phone.replace(/\D/g, '') : '';
-      const cleanCep = client.zip_code ? client.zip_code.replace(/\D/g, '') : '';
-
-      const customerPayload: any = {
-        name: client.name,
-        cpfCnpj: cleanDoc,
-        email: client.email,
-        mobilePhone: cleanPhone,
-      };
-
-      if (cleanCep) customerPayload.postalCode = cleanCep;
-      if (client.street) customerPayload.address = client.street;
-      if (client.number) customerPayload.addressNumber = client.number;
-      if (client.complement) customerPayload.complement = client.complement;
-      if (client.neighborhood) customerPayload.province = client.neighborhood;
-
-      const customerRes = await fetch(`${ASAAS_URL}/customers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'access_token': ASAAS_KEY },
-        body: JSON.stringify(customerPayload)
-      });
-      
-      const customerText = await customerRes.text();
-      let customerData;
-      try { customerData = JSON.parse(customerText); } catch (err) { throw new Error(`Asaas retornou um erro não-JSON na criação do cliente`); }
-
-      if (!customerRes.ok) {
-        throw new Error(customerData.errors?.[0]?.description || `Erro ao criar cliente no Asaas`);
-      }
-      asaasCustomerId = customerData.id;
-      
-      await supabase.from('clients').update({ asaas_customer_id: asaasCustomerId }).eq('id', clientId);
-    }
-
-    // 3. Monta o Vencimento Inicial
-    const targetDueDate = dueDate || new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    const finalBillingType = billingType === 'UNDEFINED' ? 'PIX' : billingType;
-
-    let paymentId = "";
-    let invoiceUrl = "";
-    let pixData = null;
-
-    // 4. BIFURCAÇÃO: 1x (Pagamento Único) vs Parcelado (Carnê)
-    if (installments > 1) {
-      // FLUXO DE CARNÊ/PARCELAMENTO
-      const installmentPayload = {
-        customer: asaasCustomerId,
-        billingType: finalBillingType,
-        totalValue: totalValue,
-        installmentCount: installments, // O Asaas divide o valor automaticamente
-        dueDate: targetDueDate,
-        externalReference: orderId.toString(),
-        description: `Pedido de Compra #${orderId} - Parcelado em ${installments}x`
-      };
-
-      const instRes = await fetch(`${ASAAS_URL}/installments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'access_token': ASAAS_KEY },
-        body: JSON.stringify(installmentPayload)
-      });
-      
-      const instText = await instRes.text();
-      let instData;
-      try { instData = JSON.parse(instText); } catch (err) { throw new Error(`Erro na API de Carnês do Asaas`); }
-
-      if (!instRes.ok) {
-        throw new Error(instData.errors?.[0]?.description || `Erro ao gerar Carnê no Asaas`);
-      }
-
-      paymentId = instData.id; // Retorna o id do carnê
-
-      // O Asaas não devolve o Link do Carnê direto. Buscamos a 1ª parcela gerada.
-      const getPaymentsRes = await fetch(`${ASAAS_URL}/payments?installment=${paymentId}`, {
-        headers: { 'access_token': ASAAS_KEY }
-      });
-      const getPaymentsText = await getPaymentsRes.text();
-      try { 
-        const getPaymentsData = JSON.parse(getPaymentsText);
-        invoiceUrl = getPaymentsData.data?.[0]?.invoiceUrl || "";
-      } catch (err) {}
-
-    } else {
-      // FLUXO À VISTA (1x)
-      const paymentPayload: any = {
-        customer: asaasCustomerId,
-        billingType: finalBillingType,
-        value: totalValue,
-        dueDate: targetDueDate,
-        externalReference: orderId.toString(),
-        description: `Pedido de Compra #${orderId}`
-      };
-
-      const paymentRes = await fetch(`${ASAAS_URL}/payments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'access_token': ASAAS_KEY },
-        body: JSON.stringify(paymentPayload)
-      });
-      
-      const paymentText = await paymentRes.text();
-      let paymentData;
-      try { paymentData = JSON.parse(paymentText); } catch (err) { throw new Error(`Erro na API de Cobrança do Asaas`); }
-
-      if (!paymentRes.ok) {
-        throw new Error(paymentData.errors?.[0]?.description || `Erro ao gerar cobrança no Asaas`);
-      }
-
-      paymentId = paymentData.id; 
-      invoiceUrl = paymentData.invoiceUrl;
-
-      // Se for PIX à vista, gera o QR Code na hora
-      if (finalBillingType === 'PIX') {
-        const pixRes = await fetch(`${ASAAS_URL}/payments/${paymentId}/pixQrCode`, {
-          headers: { 'access_token': ASAAS_KEY }
-        });
-        const pixText = await pixRes.text();
-        try { pixData = JSON.parse(pixText); } catch (err) {}
-      }
-    }
-
-    // 5. Atualiza o Supabase com as informações
-    await supabase.from('orders').update({
-      asaas_payment_id: paymentId,
-      payment_method: finalBillingType,
-      payment_status: 'PENDING',
-      payment_url: invoiceUrl
-    }).eq('id', orderId);
-
-    // Retorna para o Front-end
-    return NextResponse.json({ 
-      success: true, 
-      paymentId: paymentId, 
-      invoiceUrl: invoiceUrl,
-      pix: pixData 
-    });
-
-  } catch (error: any) {
-    console.error("[CHECKOUT ERROR]", error.message);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/app/api/clientes/route.ts">
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-const ERP_URL = "https://api-sandbox.baseerp.com.br";
-const ERP_KEY = process.env.BASE_ERP_API_KEY!;
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    const safeAddress = {
-      postalCode: body.zip_code ? body.zip_code.replace(/\D/g, '') : "59000000",
-      address: body.street || "Não informado",
-      addressNumber: body.number || "S/N",
-      complement: body.complement || "",
-      province: body.neighborhood || "Centro",
-      cityName: body.city || "Natal",
-      stateAbbrev: body.state || "RN",
-      country: "Brasil"
-    };
-
-    // 1. BLINDAGEM FISCAL COM A NOMENCLATURA EXATA EM PORTUGUÊS
-    const taxInfo = {
-      typeOfTaxPayer: "NAO_CONTRIBUINTE", // <--- O Segredo estava aqui!
-      finalConsumer: true,
-      simpleTax: false,
-      ruralProducer: false
-    };
-
-    const erpRes = await fetch(`${ERP_URL}/api/v1/customers`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'access_token': ERP_KEY
-      },
-      body: JSON.stringify({
-        name: body.name,
-        cpfCnpj: body.doc?.replace(/\D/g, ''),
-        phone: body.phone?.replace(/\D/g, '') || "",
-        email: body.email || "",
-        billingAddress: safeAddress,
-        deliveryAddress: safeAddress,
-        taxInformation: taxInfo
-      })
-    });
-
-    const erpData = await erpRes.json();
-    if (!erpRes.ok) throw new Error(`Erro ERP: ${JSON.stringify(erpData)}`);
-
-    const { ibge_code, ...supabaseData } = body;
-
-    const { data: client, error } = await supabase.from('clients').insert({
-      ...supabaseData,
-      base_erp_id: erpData.id.toString()
-    }).select().single();
-
-    if (error) throw error;
-
-    return NextResponse.json({ success: true, client });
-  } catch (error: any) {
-    console.error("Erro ao sincronizar cliente:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/app/api/nfe/consultar/route.ts">
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-const ERP_URL = "https://api-sandbox.baseerp.com.br";
-const ERP_KEY = process.env.BASE_ERP_API_KEY!;
-
-export async function POST(req: Request) {
-  try {
-    const { orderId } = await req.json();
-
-    // 1. Buscamos o Pedido de Venda no Base ERP usando o ID do nosso sistema
-    const searchRes = await fetch(`${ERP_URL}/api/v1/salesOrders?externalReference=${orderId}`, {
-      headers: { 'access_token': ERP_KEY }
-    });
-    const searchData = await searchRes.json();
-    
-    if (!searchData || !searchData.data || searchData.data.length === 0) {
-      throw new Error("Pedido não encontrado no ERP.");
-    }
-
-    const baseErpOrderId = searchData.data[0].id;
-
-    // 2. Consultamos o status atual da Nota Fiscal desse pedido
-    const invoiceRes = await fetch(`${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}/invoice`, {
-      headers: { 'access_token': ERP_KEY }
-    });
-    const invoiceData = await invoiceRes.json();
-
-    // 3. Analisamos a resposta (O Base ERP usa diversas nomenclaturas dependendo do estado)
-    let novoStatus = 'PROCESSANDO';
-    const statusAtual = invoiceData.invoiceStatus || invoiceData.status || '';
-
-    if (statusAtual === 'EMITIDA' || statusAtual === 'AUTHORIZED') {
-        novoStatus = 'EMITIDA';
-    } else if (statusAtual === 'ERRO' || statusAtual === 'DENIED' || statusAtual === 'REJECTED') {
-        novoStatus = 'ERRO';
-    }
-
-    // Buscamos a URL do PDF na resposta
-    const pdfUrl = invoiceData.pdfUrl || invoiceData.invoicePdfUrl || invoiceData.publicUrl || invoiceData.documentUrl || "";
-
-    // 4. Atualizamos o Supabase com o resultado
-    if (novoStatus !== 'PROCESSANDO' || pdfUrl) {
-      await supabase
-        .from('orders')
-        .update({ 
-          nfe_status: novoStatus,
-          nfe_url: pdfUrl 
-        })
-        .eq('id', orderId);
-    }
-
-    return NextResponse.json({ 
-      success: true, 
-      status: novoStatus, 
-      url: pdfUrl 
-    });
-
-  } catch (error: any) {
-    console.error("Erro ao consultar NFe:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/app/api/nfe/emitir/route.ts">
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-const ERP_URL = "https://api-sandbox.baseerp.com.br";
-const ERP_KEY = process.env.BASE_ERP_API_KEY!;
-
-async function fetchWithRetry(url: string, options: RequestInit, retries = 3, delay = 2000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const response = await fetch(url, options);
-      if (!response.ok) {
-        const errData = await response.json().catch(() => null);
-        throw new Error(errData ? JSON.stringify(errData) : `HTTP error! status: ${response.status}`);
-      }
-      return await response.json();
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      await new Promise(res => setTimeout(res, delay));
-    }
-  }
-}
-
-export async function POST(req: Request) {
-  try {
-    const { orderId } = await req.json();
-
-    await supabase.from('orders').update({ nfe_status: 'PROCESSANDO' }).eq('id', orderId);
-
-    const { data: order, error: orderErr } = await supabase
-      .from('orders')
-      .select(`
-        id, order_number, payment_method,
-        clients ( id, name, base_erp_id ),
-        order_items ( qty, price, products ( id, name, base_erp_id ) )
-      `)
-      .eq('id', orderId)
-      .single();
-
-    if (orderErr || !order) throw new Error("Pedido não encontrado.");
-
-    const client: any = Array.isArray(order.clients) ? order.clients[0] : order.clients;
-    const today = new Date().toISOString().split('T')[0];
-    const orderTotal = order.order_items.reduce((acc: number, item: any) => acc + (item.qty * item.price), 0);
-
-    const createOrderPayload = {
-      issueDate: today,
-      customerId: Number(client.base_erp_id), // <-- ID DINÂMICO VOLTOU!
-      externalReference: order.id.toString(),
-      orderItems: order.order_items.map((item: any) => {
-        const product = Array.isArray(item.products) ? item.products[0] : item.products;
-        if (!product?.base_erp_id) {
-            throw new Error(`Produto ${product?.name} não está sincronizado com o ERP.`);
-        }
-        return {
-          productId: Number(product.base_erp_id),
-          quantity: item.qty,
-          unitPrice: item.price
-        };
-      }),
-      orderPayments: [
-        {
-          bankId: 100631112, // <--- NÃO ESQUEÇA O ID DO SEU CAIXA AQUI!
-          billingType: "UNDEFINED", 
-          dueDate: today,
-          value: orderTotal,
-          generateCharge: false
-        }
-      ]
-    };
-
-    const createOrderRes = await fetch(`${ERP_URL}/api/v1/salesOrders`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'access_token': ERP_KEY
-      },
-      body: JSON.stringify(createOrderPayload)
-    });
-
-    const createOrderData = await createOrderRes.json().catch(() => null);
-
-    if (!createOrderRes.ok) {
-       throw new Error(`Falha ao criar pedido no ERP: ${createOrderData ? JSON.stringify(createOrderData) : createOrderRes.status}`);
-    }
-
-    const baseErpOrderId = createOrderData.id;
-
-    const invoiceRes = await fetchWithRetry(`${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}/invoice`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'access_token': ERP_KEY
-      },
-      body: JSON.stringify({ type: "55" })
-    });
-
-    await supabase.from('orders').update({
-      nfe_status: invoiceRes.invoiceStatus === 'EMITIDA' ? 'EMITIDA' : 'PROCESSANDO',
-      nfe_number: invoiceRes.invoiceNumber?.toString(),
-    }).eq('id', orderId);
-
-    await supabase.from('order_history').insert({
-      order_id: orderId,
-      status: 'novo',
-      changed_by: 'Sistema (ERP)',
-      note: `Nota Fiscal solicitada via Base ERP. Status: ${invoiceRes.invoiceStatus}`
-    });
-
-    return NextResponse.json({ 
-      success: true, 
-      status: invoiceRes.invoiceStatus,
-      nfe_number: invoiceRes.invoiceNumber 
-    });
-
-  } catch (error: any) {
-    console.error("❌ [NFE ERROR]", error.message);
-    try {
-      const clonedReq = req.clone();
-      const { orderId } = await clonedReq.json();
-      if (orderId) {
-        await supabase.from('orders').update({ nfe_status: 'ERRO' }).eq('id', orderId);
-      }
-    } catch (e) {}
-
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/app/api/produtos/route.ts">
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-const ERP_URL = "https://api-sandbox.baseerp.com.br";
-const ERP_KEY = process.env.BASE_ERP_API_KEY!;
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // 1. Cadastra no Base ERP primeiro
-    const erpRes = await fetch(`${ERP_URL}/api/v1/products`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'access_token': ERP_KEY
-      },
-      body: JSON.stringify({
-        name: body.name,
-        code: body.sku || `SKU-${Date.now()}`,
-        ncm: "21069090", // NCM Genérico padrão (pode vir do body depois)
-        unit: body.unit || "UN",
-        salePrice: body.price
-      })
-    });
-
-    const erpData = await erpRes.json();
-    if (!erpRes.ok) throw new Error(`Erro ERP: ${JSON.stringify(erpData)}`);
-
-    // 2. Salva no Supabase já com o ID do ERP amarrado
-    const { data: product, error } = await supabase.from('products').insert({
-      ...body,
-      base_erp_id: erpData.id.toString()
-    }).select().single();
-
-    if (error) throw error;
-
-    return NextResponse.json({ success: true, product });
-  } catch (error: any) {
-    console.error("Erro ao sincronizar produto:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
-</file>
-
 <file path="src/app/api/push/send/route.ts">
 import { NextResponse } from 'next/server';
 import webpush from 'web-push';
@@ -1071,114 +524,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true });
   } catch (error: any) {
     console.error("Erro no Subscribe:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/app/api/webhooks/asaas/route.ts">
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-// Usamos o Service Role Key para garantir que o webhook tenha permissão de gravar no banco sem precisar de um usuário logado
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // O Asaas dispara vários eventos, mas só nos interessa quando o pagamento é recebido ou confirmado
-    if (body.event === 'PAYMENT_RECEIVED' || body.event === 'PAYMENT_CONFIRMED') {
-      const asaasPaymentId = body.payment.id;
-      const externalReference = body.payment.externalReference; // Boas práticas: o Asaas devolve o ID do seu banco se você tiver enviado na criação
-
-      // 1. Busca o pedido correspondente no Supabase
-      // Adicionamos seller_id e order_number no select para o motor de notificações
-      let query = supabase.from('orders').select('id, status, seller_id, order_number').limit(1);
-      
-      if (externalReference) {
-        query = query.eq('id', externalReference);
-      } else {
-        query = query.eq('asaas_payment_id', asaasPaymentId);
-      }
-
-      const { data: orderData, error: fetchError } = await query.single();
-
-      if (fetchError || !orderData) {
-        console.error("Webhook Asaas: Pedido nao encontrado para o pagamento", asaasPaymentId);
-        return NextResponse.json({ success: true, message: "Pagamento recebido, mas pedido nao localizado no sistema." });
-      }
-
-      // Evita atualizar pedidos que já foram cancelados ou já estão em estágios avançados
-      if (orderData.status === 'aguardando_pagamento') {
-        
-        // 2. Atualiza o status do pedido para "novo" (aparece no Kanban) e o pagamento para "PAID"
-        const { error: updateError } = await supabase
-          .from('orders')
-          .update({ 
-            status: 'novo',
-            payment_status: 'PAID'
-          })
-          .eq('id', orderData.id);
-
-        if (updateError) throw updateError;
-
-        // 3. Registra no histórico do pedido de forma limpa
-        await supabase.from('order_history').insert({
-          order_id: orderData.id,
-          status: 'novo',
-          changed_by: 'Sistema (Asaas)',
-          note: 'Pagamento confirmado automaticamente pelo Asaas. Pedido liberado para separação.'
-        });
-
-        console.log(`Pedido ${orderData.order_number} atualizado para 'novo' apos pagamento.`);
-
-        // --- INICIO DO MOTOR DE NOTIFICACOES PUSH (DUPLO) ---
-        // Construimos a URL dinamicamente para funcionar local e na Vercel
-        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
-
-        try {
-          // Gatilho 1: Notifica o Gestor (Admin)
-          await fetch(`${baseUrl}/api/push/send`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              targetUserId: "admin",
-              title: "Pagamento Recebido",
-              body: `O pedido ${orderData.order_number} foi pago e liberado para o estoque.`,
-              url: "/admin/pedidos"
-            })
-          });
-
-          // Gatilho 2: Notifica o Vendedor que realizou a venda
-          if (orderData.seller_id) {
-            await fetch(`${baseUrl}/api/push/send`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                targetUserId: orderData.seller_id,
-                title: "Pagamento Confirmado",
-                body: `O pagamento da sua venda ${orderData.order_number} acabou de ser compensado.`,
-                url: "/seller/dashboard"
-              })
-            });
-          }
-        } catch (pushErr) {
-          console.error("Falha ao disparar notificacoes do webhook:", pushErr);
-        }
-        // --- FIM DO MOTOR DE NOTIFICACOES ---
-      }
-    }
-
-    // Sempre devemos retornar status 200 para o Asaas, senão ele acha que deu erro e tenta enviar de novo várias vezes
-    return NextResponse.json({ success: true, message: "Webhook processado com sucesso" });
-    
-  } catch (error: any) {
-    console.error("Erro no Webhook do Asaas:", error);
-    // Em caso de erro grave no nosso código, retornamos 500 para o Asaas tentar novamente mais tarde
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -8351,6 +7696,51 @@ export default {
 }
 </file>
 
+<file path="public/sw.js">
+// public/sw.js
+
+self.addEventListener('push', function (event) {
+  if (event.data) {
+    const data = event.data.json();
+    
+    const options = {
+      body: data.body,
+      icon: '/logo.png', // O ícone do seu app
+      badge: '/logo.png', // O ícone pequeno que fica na barra de status do Android
+      vibrate: [200, 100, 200, 100, 200], // Vibração personalizada
+      data: {
+        url: data.url || '/' // A URL mágica (Deep Link) que vamos mandar do backend
+      }
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(data.title, options)
+    );
+  }
+});
+
+self.addEventListener('notificationclick', function (event) {
+  event.notification.close(); // Fecha a notificação
+  
+  // Abre a URL que mandamos no payload (ex: /seller/rotas ou /admin/pedidos)
+  event.waitUntil(
+    clients.matchAll({ type: 'window' }).then((windowClients) => {
+      // Se o app já estiver aberto, foca nele e navega
+      for (let i = 0; i < windowClients.length; i++) {
+        const client = windowClients[i];
+        if (client.url === event.notification.data.url && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      // Se estiver fechado, abre uma nova janela
+      if (clients.openWindow) {
+        return clients.openWindow(event.notification.data.url);
+      }
+    })
+  );
+});
+</file>
+
 <file path="src/app/(admin)/admin/ciclo/page.tsx">
 "use client";
 import { CicloPedidos } from "@/components/admin/CicloPedidos";
@@ -8411,6 +7801,420 @@ import { VendorPedidos } from "@/components/seller/VendorPedidos";
 
 export default function SellerPedidosPage() {
   return <VendorPedidos />;
+}
+</file>
+
+<file path="src/app/api/checkout/route.ts">
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const ASAAS_URL = process.env.ASAAS_API_URL || "https://sandbox.asaas.com/api/v3";
+const ASAAS_KEY = process.env.ASAAS_API_KEY!;
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { orderId, clientId, billingType, totalValue, dueDate, installments } = body;
+
+    // 1. Busca os dados COMPLETOS do Cliente no Supabase
+    const { data: client, error: clientErr } = await supabase
+      .from('clients')
+      .select('*')
+      .eq('id', clientId)
+      .single();
+
+    if (clientErr || !client) throw new Error("Cliente não encontrado no banco de dados.");
+
+    let asaasCustomerId = client.asaas_customer_id;
+
+    // 2. Se o cliente ainda não existe no Asaas, cria enviando o ENDEREÇO
+    if (!asaasCustomerId) {
+      const cleanDoc = client.doc ? client.doc.replace(/\D/g, '') : '';
+      const cleanPhone = client.phone ? client.phone.replace(/\D/g, '') : '';
+      const cleanCep = client.zip_code ? client.zip_code.replace(/\D/g, '') : '';
+
+      const customerPayload: any = {
+        name: client.name,
+        cpfCnpj: cleanDoc,
+        email: client.email,
+        mobilePhone: cleanPhone,
+      };
+
+      if (cleanCep) customerPayload.postalCode = cleanCep;
+      if (client.street) customerPayload.address = client.street;
+      if (client.number) customerPayload.addressNumber = client.number;
+      if (client.complement) customerPayload.complement = client.complement;
+      if (client.neighborhood) customerPayload.province = client.neighborhood;
+
+      const customerRes = await fetch(`${ASAAS_URL}/customers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'access_token': ASAAS_KEY },
+        body: JSON.stringify(customerPayload)
+      });
+      
+      const customerText = await customerRes.text();
+      let customerData;
+      try { customerData = JSON.parse(customerText); } catch (err) { throw new Error(`Asaas retornou um erro não-JSON na criação do cliente`); }
+
+      if (!customerRes.ok) {
+        throw new Error(customerData.errors?.[0]?.description || `Erro ao criar cliente no Asaas`);
+      }
+      asaasCustomerId = customerData.id;
+      
+      await supabase.from('clients').update({ asaas_customer_id: asaasCustomerId }).eq('id', clientId);
+    }
+
+    // 3. Monta o Vencimento Inicial
+    const targetDueDate = dueDate || new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    const finalBillingType = billingType === 'UNDEFINED' ? 'PIX' : billingType;
+
+    let paymentId = "";
+    let invoiceUrl = "";
+    let pixData = null;
+
+    // 4. BIFURCAÇÃO: 1x (Pagamento Único) vs Parcelado (Carnê)
+    if (installments > 1) {
+      // FLUXO DE CARNÊ/PARCELAMENTO
+      const installmentPayload = {
+        customer: asaasCustomerId,
+        billingType: finalBillingType,
+        totalValue: totalValue,
+        installmentCount: installments, // O Asaas divide o valor automaticamente
+        dueDate: targetDueDate,
+        externalReference: orderId.toString(),
+        description: `Pedido de Compra #${orderId} - Parcelado em ${installments}x`
+      };
+
+      const instRes = await fetch(`${ASAAS_URL}/installments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'access_token': ASAAS_KEY },
+        body: JSON.stringify(installmentPayload)
+      });
+      
+      const instText = await instRes.text();
+      let instData;
+      try { instData = JSON.parse(instText); } catch (err) { throw new Error(`Erro na API de Carnês do Asaas`); }
+
+      if (!instRes.ok) {
+        throw new Error(instData.errors?.[0]?.description || `Erro ao gerar Carnê no Asaas`);
+      }
+
+      paymentId = instData.id; // Retorna o id do carnê
+
+      // O Asaas não devolve o Link do Carnê direto. Buscamos a 1ª parcela gerada.
+      const getPaymentsRes = await fetch(`${ASAAS_URL}/payments?installment=${paymentId}`, {
+        headers: { 'access_token': ASAAS_KEY }
+      });
+      const getPaymentsText = await getPaymentsRes.text();
+      try { 
+        const getPaymentsData = JSON.parse(getPaymentsText);
+        invoiceUrl = getPaymentsData.data?.[0]?.invoiceUrl || "";
+      } catch (err) {}
+
+    } else {
+      // FLUXO À VISTA (1x)
+      const paymentPayload: any = {
+        customer: asaasCustomerId,
+        billingType: finalBillingType,
+        value: totalValue,
+        dueDate: targetDueDate,
+        externalReference: orderId.toString(),
+        description: `Pedido de Compra #${orderId}`
+      };
+
+      const paymentRes = await fetch(`${ASAAS_URL}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'access_token': ASAAS_KEY },
+        body: JSON.stringify(paymentPayload)
+      });
+      
+      const paymentText = await paymentRes.text();
+      let paymentData;
+      try { paymentData = JSON.parse(paymentText); } catch (err) { throw new Error(`Erro na API de Cobrança do Asaas`); }
+
+      if (!paymentRes.ok) {
+        throw new Error(paymentData.errors?.[0]?.description || `Erro ao gerar cobrança no Asaas`);
+      }
+
+      paymentId = paymentData.id; 
+      invoiceUrl = paymentData.invoiceUrl;
+
+      // Se for PIX à vista, gera o QR Code na hora
+      if (finalBillingType === 'PIX') {
+        const pixRes = await fetch(`${ASAAS_URL}/payments/${paymentId}/pixQrCode`, {
+          headers: { 'access_token': ASAAS_KEY }
+        });
+        const pixText = await pixRes.text();
+        try { pixData = JSON.parse(pixText); } catch (err) {}
+      }
+    }
+
+    // 5. Atualiza o Supabase com as informações
+    await supabase.from('orders').update({
+      asaas_payment_id: paymentId,
+      payment_method: finalBillingType,
+      payment_status: 'PENDING',
+      payment_url: invoiceUrl
+    }).eq('id', orderId);
+
+    // Retorna para o Front-end
+    return NextResponse.json({ 
+      success: true, 
+      paymentId: paymentId, 
+      invoiceUrl: invoiceUrl,
+      pix: pixData 
+    });
+
+  } catch (error: any) {
+    console.error("[CHECKOUT ERROR]", error.message);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+</file>
+
+<file path="src/app/api/clientes/route.ts">
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const ERP_URL = process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br";
+const ERP_KEY = process.env.BASE_ERP_API_KEY!;
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+
+    const safeAddress = {
+      postalCode: body.zip_code ? body.zip_code.replace(/\D/g, '') : "59000000",
+      address: body.street || "Não informado",
+      addressNumber: body.number || "S/N",
+      complement: body.complement || "",
+      province: body.neighborhood || "Centro",
+      cityName: body.city || "Natal",
+      stateAbbrev: body.state || "RN",
+      country: "Brasil"
+    };
+
+    // 1. BLINDAGEM FISCAL COM A NOMENCLATURA EXATA EM PORTUGUÊS
+    const taxInfo = {
+      typeOfTaxPayer: "NAO_CONTRIBUINTE", // <--- O Segredo estava aqui!
+      finalConsumer: true,
+      simpleTax: false,
+      ruralProducer: false
+    };
+
+    const erpRes = await fetch(`${ERP_URL}/api/v1/customers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'access_token': ERP_KEY
+      },
+      body: JSON.stringify({
+        name: body.name,
+        cpfCnpj: body.doc?.replace(/\D/g, ''),
+        phone: body.phone?.replace(/\D/g, '') || "",
+        email: body.email || "",
+        billingAddress: safeAddress,
+        deliveryAddress: safeAddress,
+        taxInformation: taxInfo
+      })
+    });
+
+    const erpData = await erpRes.json();
+    if (!erpRes.ok) throw new Error(`Erro ERP: ${JSON.stringify(erpData)}`);
+
+    const { ibge_code, ...supabaseData } = body;
+
+    const { data: client, error } = await supabase.from('clients').insert({
+      ...supabaseData,
+      base_erp_id: erpData.id.toString()
+    }).select().single();
+
+    if (error) throw error;
+
+    return NextResponse.json({ success: true, client });
+  } catch (error: any) {
+    console.error("Erro ao sincronizar cliente:", error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+</file>
+
+<file path="src/app/api/produtos/route.ts">
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const ERP_URL = process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br";
+const ERP_KEY = process.env.BASE_ERP_API_KEY!;
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+
+    // 1. Cadastra no Base ERP primeiro
+    const erpRes = await fetch(`${ERP_URL}/api/v1/products`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'access_token': ERP_KEY
+      },
+      body: JSON.stringify({
+        name: body.name,
+        code: body.sku || `SKU-${Date.now()}`,
+        ncm: "21069090", // NCM Genérico padrão (pode vir do body depois)
+        unit: body.unit || "UN",
+        salePrice: body.price
+      })
+    });
+
+    const erpData = await erpRes.json();
+    if (!erpRes.ok) throw new Error(`Erro ERP: ${JSON.stringify(erpData)}`);
+
+    // 2. Salva no Supabase já com o ID do ERP amarrado
+    const { data: product, error } = await supabase.from('products').insert({
+      ...body,
+      base_erp_id: erpData.id.toString()
+    }).select().single();
+
+    if (error) throw error;
+
+    return NextResponse.json({ success: true, product });
+  } catch (error: any) {
+    console.error("Erro ao sincronizar produto:", error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+</file>
+
+<file path="src/app/api/webhooks/asaas/route.ts">
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+// Usamos o Service Role Key para garantir que o webhook tenha permissão de gravar no banco sem precisar de um usuário logado
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    // --- INÍCIO DA TRAVA DE SEGURANÇA ---
+    const asaasToken = req.headers.get('asaas-access-token');
+    
+    // Verifica se o token enviado na requisição bate com a variável de ambiente salva na Vercel
+    if (!asaasToken || asaasToken !== process.env.ASAAS_WEBHOOK_TOKEN) {
+      console.error("Tentativa de acesso não autorizado ao webhook do Asaas.");
+      return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+    }
+    // --- FIM DA TRAVA DE SEGURANÇA ---
+
+    const body = await req.json();
+
+    // O Asaas dispara vários eventos, mas só nos interessa quando o pagamento é recebido ou confirmado
+    if (body.event === 'PAYMENT_RECEIVED' || body.event === 'PAYMENT_CONFIRMED') {
+      const asaasPaymentId = body.payment.id;
+      const externalReference = body.payment.externalReference; // Boas práticas: o Asaas devolve o ID do seu banco se você tiver enviado na criação
+
+      // 1. Busca o pedido correspondente no Supabase
+      // Adicionamos seller_id e order_number no select para o motor de notificações
+      let query = supabase.from('orders').select('id, status, seller_id, order_number').limit(1);
+      
+      if (externalReference) {
+        query = query.eq('id', externalReference);
+      } else {
+        query = query.eq('asaas_payment_id', asaasPaymentId);
+      }
+
+      const { data: orderData, error: fetchError } = await query.single();
+
+      if (fetchError || !orderData) {
+        console.error("Webhook Asaas: Pedido nao encontrado para o pagamento", asaasPaymentId);
+        return NextResponse.json({ success: true, message: "Pagamento recebido, mas pedido nao localizado no sistema." });
+      }
+
+      // Evita atualizar pedidos que já foram cancelados ou já estão em estágios avançados
+      if (orderData.status === 'aguardando_pagamento') {
+        
+        // 2. Atualiza o status do pedido para "novo" (aparece no Kanban) e o pagamento para "PAID"
+        const { error: updateError } = await supabase
+          .from('orders')
+          .update({ 
+            status: 'novo',
+            payment_status: 'PAID'
+          })
+          .eq('id', orderData.id);
+
+        if (updateError) throw updateError;
+
+        // 3. Registra no histórico do pedido de forma limpa
+        await supabase.from('order_history').insert({
+          order_id: orderData.id,
+          status: 'novo',
+          changed_by: 'Sistema (Asaas)',
+          note: 'Pagamento confirmado automaticamente pelo Asaas. Pedido liberado para separação.'
+        });
+
+        console.log(`Pedido ${orderData.order_number} atualizado para 'novo' apos pagamento.`);
+
+        // --- INICIO DO MOTOR DE NOTIFICACOES PUSH (DUPLO) ---
+        // Construimos a URL dinamicamente para funcionar local e na Vercel
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+
+        try {
+          // Gatilho 1: Notifica o Gestor (Admin)
+          await fetch(`${baseUrl}/api/push/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              targetUserId: "admin",
+              title: "Pagamento Recebido",
+              body: `O pedido ${orderData.order_number} foi pago e liberado para o estoque.`,
+              url: "/admin/pedidos"
+            })
+          });
+
+          // Gatilho 2: Notifica o Vendedor que realizou a venda
+          if (orderData.seller_id) {
+            await fetch(`${baseUrl}/api/push/send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                targetUserId: orderData.seller_id,
+                title: "Pagamento Confirmado",
+                body: `O pagamento da sua venda ${orderData.order_number} acabou de ser compensado.`,
+                url: "/seller/dashboard"
+              })
+            });
+          }
+        } catch (pushErr) {
+          console.error("Falha ao disparar notificacoes do webhook:", pushErr);
+        }
+        // --- FIM DO MOTOR DE NOTIFICACOES ---
+      }
+    }
+
+    // Sempre devemos retornar status 200 para o Asaas, senão ele acha que deu erro e tenta enviar de novo várias vezes
+    return NextResponse.json({ success: true, message: "Webhook processado com sucesso" });
+    
+  } catch (error: any) {
+    console.error("Erro no Webhook do Asaas:", error);
+    // Em caso de erro grave no nosso código, retornamos 500 para o Asaas tentar novamente mais tarde
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 }
 </file>
 
@@ -13855,335 +13659,6 @@ export function Vendedores() {
 }
 </file>
 
-<file path="src/components/layout/AdminShell.tsx">
-"use client";
-
-import { useState, useEffect } from "react";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import {
-  LayoutDashboard,
-  ShoppingCart,
-  Users,
-  Package,
-  UserCheck,
-  Bell,
-  Search,
-  Menu,
-  X,
-  ChevronDown,
-  LogOut,
-  Settings,
-  Route,
-  Layers,
-  Clock,
-} from "lucide-react";
-import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
-import { useApp } from "@/contexts/AppContext";
-import { supabase } from "@/utils/supabase";
-
-// 1. IMPORT DO MOTOR DE PUSH
-import { usePushNotifications } from "@/hooks/usePushNotifications";
-
-const logoImg = "/logo.png";
-
-const navItems: { href: string; label: string; icon: React.ElementType }[] = [
-  { href: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/admin/pedidos", label: "Pedidos", icon: ShoppingCart },
-  { href: "/admin/clientes", label: "Clientes", icon: Users },
-  { href: "/admin/produtos", label: "Produtos / Estoque", icon: Package },
-  { href: "/admin/vendedores", label: "Vendedores", icon: UserCheck },
-  { href: "/admin/rotas", label: "Rotas Inteligentes", icon: Route },
-  { href: "/admin/ciclo", label: "Ciclo de Pedidos", icon: Layers },
-];
-
-const notifications = [
-  {
-    id: 1,
-    msg: "Novo pedido de Distribuidora Norte & Sul",
-    type: "info",
-    time: "18 min",
-  },
-  {
-    id: 2,
-    msg: "Fernanda Costa atingiu 98% da meta!",
-    type: "success",
-    time: "1h",
-  },
-];
-
-export function AdminShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const { logout, urgentActive } = useApp();
-
-  // 2. ATIVAÇÃO INVISÍVEL DAS NOTIFICAÇÕES PARA O ADMIN
-  // Pede a permissão e registra o Service Worker no Supabase como 'admin'
-  usePushNotifications();
-
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [notifOpen, setNotifOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-
-  // Estado real para contar produtos com baixo estoque no Supabase
-  const [lowStockCount, setLowStockCount] = useState(0);
-
-  useEffect(() => {
-    async function fetchLowStock() {
-      // Usamos count para não precisar baixar todos os dados, apenas o número
-      const { count } = await supabase
-        .from("products")
-        .select("*", { count: "exact", head: true })
-        .lt("stock", 15);
-      if (count !== null) setLowStockCount(count);
-    }
-    fetchLowStock();
-  }, []);
-
-  function handleLogout() {
-    logout();
-    router.push("/login");
-  }
-
-  function isActive(href: string) {
-    return pathname === href || pathname.startsWith(`${href}/`);
-  }
-
-  return (
-    <div
-      className="flex h-screen bg-background overflow-hidden"
-      style={{ fontFamily: "'Inter', sans-serif" }}
-    >
-      {/* Overlay com desfoque premium no mobile */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      <aside
-        className={`fixed lg:static inset-y-0 left-0 z-40 w-64 bg-sidebar flex flex-col transition-transform duration-300 ease-in-out ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
-        }`}
-      >
-        <div className="flex items-center gap-3 px-4 py-4 border-b border-sidebar-border">
-          <div className="w-12 h-12 rounded-full overflow-hidden flex-shrink-0 ring-2 ring-amber-600/40">
-            <ImageWithFallback
-              src={logoImg}
-              alt="PNZ Frios"
-              className="w-full h-full object-cover"
-            />
-          </div>
-          <div>
-            <p className="text-sm font-bold text-white leading-tight">
-              PNZ Frios
-            </p>
-            <p className="text-[10px] text-sidebar-foreground/50 leading-tight">
-              Sistema de Gestão
-            </p>
-          </div>
-          <button
-            className="ml-auto lg:hidden text-sidebar-foreground/60 hover:text-white"
-            onClick={() => setSidebarOpen(false)}
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <nav className="flex-1 px-3 py-4 space-y-1.5 overflow-y-auto custom-scrollbar">
-          <p className="text-[10px] font-bold text-sidebar-foreground/50 uppercase tracking-widest px-3 mb-3">
-            Menu Principal
-          </p>
-          {navItems.map(({ href, label, icon: Icon }) => (
-            <Link
-              key={href}
-              href={href}
-              onClick={() => setSidebarOpen(false)}
-              className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl text-sm font-medium transition-all active:scale-[0.98] ${
-                isActive(href)
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-md"
-                  : "text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-white"
-              }`}
-            >
-              <Icon className="w-5 h-5 flex-shrink-0" />
-              {label}
-
-              {/* Badge dinâmico vindo do Supabase */}
-              {href === "/admin/produtos" && lowStockCount > 0 && (
-                <span className="ml-auto w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">
-                  {lowStockCount}
-                </span>
-              )}
-              {href === "/admin/ciclo" && urgentActive > 0 && (
-                <span className="ml-auto w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
-                  {urgentActive}
-                </span>
-              )}
-            </Link>
-          ))}
-        </nav>
-
-        <div className="px-3 py-4 border-t border-sidebar-border">
-          <div className="flex items-center gap-3 px-2">
-            <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-              AC
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold text-white truncate">
-                Admin Central
-              </p>
-              <p className="text-[10px] text-sidebar-foreground/50">Gestor</p>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="text-sidebar-foreground/50 hover:text-white transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </aside>
-
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <header className="bg-card border-b border-border px-4 lg:px-6 py-3 flex items-center gap-3 flex-shrink-0 shadow-sm">
-          <button
-            className="lg:hidden p-2 rounded-lg hover:bg-secondary transition-colors"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <Menu className="w-5 h-5 text-foreground" />
-          </button>
-
-          <div className="relative flex-1 max-w-sm hidden sm:block">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
-              placeholder="Busca rápida..."
-              className="w-full pl-9 pr-4 py-2 rounded-lg border border-border bg-card text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"
-            />
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
-            <div className="relative">
-              <button
-                onClick={() => {
-                  setNotifOpen(!notifOpen);
-                  setProfileOpen(false);
-                }}
-                className="relative p-2 rounded-lg hover:bg-secondary transition-colors"
-              >
-                <Bell className="w-5 h-5 text-muted-foreground" />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
-              </button>
-
-              {notifOpen && (
-                <div className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                    <p className="text-sm font-semibold text-foreground">
-                      Notificações
-                    </p>
-                    <span className="text-xs text-muted-foreground">
-                      {notifications.length + (lowStockCount > 0 ? 1 : 0)} novas
-                    </span>
-                  </div>
-                  <div className="divide-y divide-border max-h-72 overflow-y-auto">
-                    {/* Injeta a notificação de estoque dinamicamente se houver */}
-                    {lowStockCount > 0 && (
-                      <div className="flex gap-3 px-4 py-3 hover:bg-secondary/40 transition-colors">
-                        <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-amber-500" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-foreground leading-snug">
-                            Atenção: {lowStockCount} produto(s) com estoque
-                            crítico!
-                          </p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            Agora
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {notifications.map((n) => (
-                      <div
-                        key={n.id}
-                        className="flex gap-3 px-4 py-3 hover:bg-secondary/40 transition-colors"
-                      >
-                        <div
-                          className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${
-                            n.type === "warn"
-                              ? "bg-amber-500"
-                              : n.type === "success"
-                                ? "bg-[#2d6a3a]"
-                                : "bg-[#1e4023]"
-                          }`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-foreground leading-snug">
-                            {n.msg}
-                          </p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {n.time} atrás
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="relative">
-              <button
-                onClick={() => {
-                  setProfileOpen(!profileOpen);
-                  setNotifOpen(false);
-                }}
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-secondary transition-colors"
-              >
-                <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
-                  AC
-                </div>
-                <span className="hidden sm:block text-sm font-medium text-foreground">
-                  Admin
-                </span>
-                <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
-              </button>
-
-              {profileOpen && (
-                <div className="absolute right-0 top-full mt-2 w-44 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
-                  {[
-                    {
-                      icon: Settings,
-                      label: "Configurações",
-                      action: () => {},
-                    },
-                    { icon: LogOut, label: "Sair", action: handleLogout },
-                  ].map(({ icon: Icon, label, action }) => (
-                    <button
-                      key={label}
-                      onClick={action}
-                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-foreground hover:bg-secondary/50 transition-colors"
-                    >
-                      <Icon className="w-4 h-4 text-muted-foreground" />
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </header>
-
-        <main className="flex-1 overflow-y-auto px-4 lg:px-6 py-6">
-          <div className="max-w-7xl mx-auto">{children}</div>
-        </main>
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/components/seller/SellerRotas.tsx">
 "use client";
 import { useState, useEffect } from "react";
@@ -15003,500 +14478,6 @@ export function ClientModal({
 }
 </file>
 
-<file path="src/components/ui/OrderDetailModal.tsx">
-"use client";
-import { useState } from "react";
-import { motion } from "motion/react";
-import {
-  X,
-  Zap,
-  MapPin,
-  User2,
-  StickyNote,
-  ChevronRight,
-  FileText,
-  Download,
-  CheckCircle,
-  RefreshCw,
-  Wallet,
-  Copy,
-} from "lucide-react";
-import { colFor, nextStatus } from "@/utils/kanban";
-import { fmt } from "@/utils/format";
-import { supabase } from "@/utils/supabase";
-import type { KanbanOrder } from "@/types";
-
-export function OrderDetailModal({
-  order,
-  onClose,
-  onAdvance,
-  onCancel,
-  onAddNote,
-  isAdmin,
-}: {
-  order: KanbanOrder & {
-    nfeStatus?: string;
-    nfeUrl?: string;
-    nfeNumber?: string;
-    paymentUrl?: string;
-    paymentMethod?: string;
-  };
-  onClose: () => void;
-  onAdvance: (id: string, note: string) => void;
-  onCancel: (id: string, note: string) => void;
-  onAddNote: (id: string, note: string) => void;
-  isAdmin: boolean;
-}) {
-  const [note, setNote] = useState("");
-  const [confirmCancel, setConfirmCancel] = useState(false);
-
-  // Estados para emissão e consulta da NFe
-  const [isEmittingNfe, setIsEmittingNfe] = useState(false);
-  const [isCheckingNfe, setIsCheckingNfe] = useState(false);
-  const [localNfeStatus, setLocalNfeStatus] = useState(order.nfeStatus);
-  const [localNfeUrl, setLocalNfeUrl] = useState(order.nfeUrl);
-
-  const col = colFor(order.status) || {
-    bg: "bg-gray-50",
-    color: "text-gray-700",
-    border: "border-gray-200",
-    dot: "bg-gray-500",
-    label: "Desconhecido",
-  };
-  const next = nextStatus(order.status);
-  const nextCol = next ? colFor(next) : null;
-
-  const canAdvance = isAdmin ? !!next : order.status === "rota";
-  const canCancel =
-    isAdmin && order.status !== "entregue" && order.status !== "cancelado";
-
-  async function handleEmitirNfe() {
-    if (
-      !confirm(
-        "Confirmar a emissão da Nota Fiscal Eletrônica para este pedido?",
-      )
-    )
-      return;
-
-    setIsEmittingNfe(true);
-    try {
-      const res = await fetch("/api/nfe/emitir", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: order.id }),
-      });
-      const data = await res.json();
-
-      if (!res.ok)
-        throw new Error(data.error || "Erro desconhecido ao emitir NF-e");
-
-      const novoStatus = data.status === "EMITIDA" ? "EMITIDA" : "PROCESSANDO";
-      const novaUrl = data.nfe_url || "";
-
-      const { error: dbError } = await supabase
-        .from("orders")
-        .update({
-          nfe_status: novoStatus,
-          nfe_url: novaUrl,
-          nfe_number: data.nfe_number?.toString(),
-        })
-        .eq("id", order.id);
-
-      if (dbError) {
-        console.error("Erro ao salvar NFe no Supabase:", dbError);
-      }
-
-      setLocalNfeStatus(novoStatus);
-      setLocalNfeUrl(novaUrl);
-    } catch (err: any) {
-      console.error("Erro NFe:", err);
-      setLocalNfeStatus("ERRO");
-
-      await supabase
-        .from("orders")
-        .update({ nfe_status: "ERRO" })
-        .eq("id", order.id);
-
-      alert(`Falha na emissão da NF-e: ${err.message}`);
-    } finally {
-      setIsEmittingNfe(false);
-    }
-  }
-
-  async function handleCheckNfeStatus() {
-    setIsCheckingNfe(true);
-    try {
-      const res = await fetch("/api/nfe/consultar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: order.id }),
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        setLocalNfeStatus(data.status);
-        if (data.url) setLocalNfeUrl(data.url);
-
-        if (data.status === "ERRO") {
-          alert(
-            "A SEFAZ rejeitou a nota. Verifique o painel do ERP para corrigir.",
-          );
-        }
-      } else {
-        alert(
-          "Erro ao consultar status: " + (data.error || "Tente novamente."),
-        );
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Falha de comunicação ao consultar o status.");
-    } finally {
-      setIsCheckingNfe(false);
-    }
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 16 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        transition={{ duration: 0.25 }}
-        className="bg-card w-full max-w-lg rounded-2xl shadow-2xl border border-border overflow-hidden max-h-[90vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className={`h-1.5 w-full ${col.dot}`} />
-        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-border">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-base font-black text-foreground">
-                {order.orderNumber}
-              </span>
-              {order.priority === "Urgente" && (
-                <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">
-                  <Zap className="w-2.5 h-2.5" />
-                  URGENTE
-                </span>
-              )}
-              <span
-                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${col.bg} ${col.color} ${col.border}`}
-              >
-                {col.label}
-              </span>
-            </div>
-            <p className="text-sm font-semibold text-foreground">
-              {order.clientName}
-            </p>
-            <p className="text-xs text-muted-foreground flex items-center gap-3 mt-0.5">
-              <span className="flex items-center gap-1">
-                <User2 className="w-3 h-3" />
-                {order.sellerName}
-              </span>
-              <span className="flex items-center gap-1">
-                <MapPin className="w-3 h-3" />
-                {order.deliveryAddress?.split(" ")[1]?.trim() || "Sem endereço"}
-              </span>
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-muted transition-colors flex-shrink-0"
-          >
-            <X className="w-4 h-4 text-muted-foreground" />
-          </button>
-        </div>
-
-        <div className="overflow-y-auto flex-1">
-          {isAdmin && order.status !== "cancelado" && (
-            <div className="px-5 py-4 border-b border-border bg-secondary/30">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
-                    <FileText className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-foreground">
-                      Nota Fiscal
-                    </p>
-                    <p className="text-[10px] text-muted-foreground">
-                      {localNfeStatus === "EMITIDA"
-                        ? "Documento autorizado"
-                        : localNfeStatus === "PROCESSANDO"
-                          ? "Aguardando SEFAZ"
-                          : "Emissão via Base ERP"}
-                    </p>
-                  </div>
-                </div>
-
-                {/* RENDERIZAÇÃO INTELIGENTE DO BOTÃO */}
-                {localNfeStatus === "EMITIDA" ? (
-                  <a
-                    href={localNfeUrl || "#"}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition-colors shadow-sm"
-                  >
-                    <CheckCircle className="w-3.5 h-3.5" /> PDF Gerado
-                  </a>
-                ) : localNfeStatus === "PROCESSANDO" ? (
-                  <button
-                    onClick={handleCheckNfeStatus}
-                    disabled={isCheckingNfe}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-yellow-500 text-white rounded-lg text-xs font-bold hover:bg-yellow-600 active:scale-95 transition-all shadow-sm disabled:opacity-50"
-                  >
-                    {isCheckingNfe ? (
-                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    )}
-                    {isCheckingNfe ? "Consultando..." : "Consultar SEFAZ"}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleEmitirNfe}
-                    disabled={isEmittingNfe}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
-                  >
-                    {isEmittingNfe ? (
-                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      "Emitir NF-e"
-                    )}
-                  </button>
-                )}
-              </div>
-              {localNfeStatus === "ERRO" && (
-                <p className="text-[10px] text-red-500 mt-2 font-medium">
-                  ⚠️ Houve uma falha na última tentativa de emissão. A SEFAZ
-                  pode ter rejeitado.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* SEGUNDA VIA DE PAGAMENTO (Só aparece se o status for aguardando_pagamento) */}
-          {isAdmin && order.status === "aguardando_pagamento" && (
-            <div className="px-5 py-4 border-b border-border bg-orange-50/40">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600">
-                    <Wallet className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-orange-800">
-                      Pagamento Pendente
-                    </p>
-                    <p className="text-[10px] text-orange-600/80">
-                      Link via Asaas ({order.paymentMethod || "PIX/Boleto"})
-                    </p>
-                  </div>
-                </div>
-
-                {order.paymentUrl ? (
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(order.paymentUrl || "");
-                      alert(
-                        "Link de pagamento copiado! Cole no WhatsApp do cliente.",
-                      );
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 active:scale-95 transition-all shadow-sm"
-                  >
-                    <Copy className="w-3.5 h-3.5" /> Copiar Link (2ª Via)
-                  </button>
-                ) : (
-                  <span className="text-[10px] text-orange-600 italic">
-                    Link não disponível no banco
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="px-5 py-3 border-b border-border">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-              Itens do Pedido
-            </p>
-            <div className="space-y-1.5">
-              {order.items.map((item, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between text-sm"
-                >
-                  <span className="text-foreground">{item.name}</span>
-                  <div className="flex items-center gap-3 text-muted-foreground">
-                    <span className="font-mono text-xs">
-                      {item.qty}x {fmt(item.price)}
-                    </span>
-                    <span className="font-semibold text-foreground">
-                      {fmt(item.qty * item.price)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-between items-center mt-3 pt-2 border-t border-border">
-              <span className="text-sm font-semibold text-foreground">
-                Total do Pedido
-              </span>
-              <span className="text-lg font-black text-[#1e4023]">
-                {fmt(order.total)}
-              </span>
-            </div>
-          </div>
-
-          {(order.deliveryAddress || order.notes) && (
-            <div className="px-5 py-3 border-b border-border space-y-2">
-              {order.deliveryAddress && (
-                <p className="text-xs text-muted-foreground flex items-start gap-1.5">
-                  <MapPin className="w-3 h-3 mt-0.5 flex-shrink-0 text-[#1e4023]" />
-                  {order.deliveryAddress}
-                </p>
-              )}
-              {order.notes && (
-                <p className="text-xs text-muted-foreground flex items-start gap-1.5 italic">
-                  <StickyNote className="w-3 h-3 mt-0.5 flex-shrink-0" />"
-                  {order.notes}"
-                </p>
-              )}
-            </div>
-          )}
-
-          <div className="px-5 py-4 border-b border-border">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-              Histórico do Ciclo
-            </p>
-            <div className="relative">
-              <div className="absolute left-3 top-2 bottom-2 w-px bg-border" />
-              <div className="space-y-3">
-                {order.history.map((h, i) => {
-                  const hCol = colFor(h.status) || {
-                    bg: "bg-gray-50",
-                    color: "text-gray-700",
-                    border: "border-gray-200",
-                    dot: "bg-gray-500",
-                    label: h.status,
-                  };
-                  return (
-                    <div key={i} className="flex gap-3 items-start">
-                      <div
-                        className={`w-6 h-6 rounded-full ${hCol.dot} flex items-center justify-center flex-shrink-0 z-10 ring-2 ring-card`}
-                      >
-                        <span className="w-2 h-2 rounded-full bg-white" />
-                      </div>
-                      <div className="flex-1 min-w-0 pb-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span
-                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${hCol.bg} ${hCol.color} ${hCol.border}`}
-                          >
-                            {hCol.label}
-                          </span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {h.by}
-                          </span>
-                          <span className="text-[10px] text-muted-foreground/50 ml-auto">
-                            {h.time.split("T")[1]?.substring(0, 5) || ""}
-                          </span>
-                        </div>
-                        {h.note && (
-                          <p className="text-xs text-muted-foreground mt-0.5 italic">
-                            "{h.note}"
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          <div className="px-5 py-4">
-            <label className="block text-xs font-medium text-foreground mb-1.5">
-              Adicionar observação
-            </label>
-            <textarea
-              rows={2}
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Ex: Confirmado por telefone, entregue no depósito..."
-              className="w-full px-3 py-2 rounded-xl border border-border bg-card text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition resize-none"
-            />
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 px-5 py-4 border-t border-border bg-secondary/20">
-          {canAdvance && nextCol && !confirmCancel && (
-            <button
-              onClick={() => {
-                onAdvance(order.id, note);
-                onClose();
-              }}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold ${nextCol.bg} ${nextCol.color} border ${nextCol.border} hover:brightness-95 transition-all`}
-            >
-              <ChevronRight className="w-4 h-4" />
-              {isAdmin ? `Mover para: ${nextCol.label}` : "Confirmar Entrega"}
-            </button>
-          )}
-          {canCancel && !confirmCancel && (
-            <button
-              onClick={() => setConfirmCancel(true)}
-              className="px-4 py-2.5 rounded-xl text-sm font-medium text-red-600 bg-red-50 border border-red-200 hover:bg-red-100 transition-colors"
-            >
-              Cancelar
-            </button>
-          )}
-          {confirmCancel && (
-            <div className="flex-1 flex items-center gap-2">
-              <span className="text-xs text-red-600 font-medium flex-1">
-                Confirmar cancelamento?
-              </span>
-              <button
-                onClick={() => {
-                  onCancel(order.id, note);
-                  onClose();
-                }}
-                className="px-3 py-2 rounded-xl bg-red-500 text-white text-xs font-bold hover:bg-red-600 transition-colors"
-              >
-                Confirmar
-              </button>
-              <button
-                onClick={() => setConfirmCancel(false)}
-                className="px-3 py-2 rounded-xl bg-muted text-muted-foreground text-xs hover:bg-secondary transition-colors"
-              >
-                Não
-              </button>
-            </div>
-          )}
-          {!canAdvance && !canCancel && (
-            <div className="flex-1 flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                {order.status === "entregue"
-                  ? "Ciclo finalizado com sucesso"
-                  : "Pedido encerrado"}
-              </span>
-              {note && (
-                <button
-                  onClick={() => {
-                    onAddNote(order.id, note);
-                    onClose();
-                  }}
-                  className="px-4 py-2 rounded-xl bg-primary text-primary-foreground text-xs font-semibold hover:bg-[#163318] transition-colors"
-                >
-                  Salvar nota
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </motion.div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/data/routes.ts">
 // Arquivo legado (mock) obsoleto. 
 // Esvaziado para não quebrar o build da Vercel. O sistema usa 100% Supabase agora.
@@ -15585,6 +14566,178 @@ export const routes: any[] = [];
     "@types/web-push": "^3.6.4",
     "tailwindcss": "4.1.12",
     "typescript": "5.7.3"
+  }
+}
+</file>
+
+<file path="src/app/api/nfe/emitir/route.ts">
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const ERP_URL = process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br";
+const ERP_KEY = process.env.BASE_ERP_API_KEY!;
+
+async function fetchWithRetry(url: string, options: RequestInit, retries = 3, delay = 2000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        throw new Error(errData ? JSON.stringify(errData) : `HTTP error! status: ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      await new Promise(res => setTimeout(res, delay));
+    }
+  }
+}
+
+export async function POST(req: Request) {
+  let orderId: string | null = null;
+
+  try {
+    const body = await req.json();
+    orderId = body.orderId;
+
+    if (!orderId) {
+      throw new Error("ID do pedido não fornecido.");
+    }
+
+    await supabase.from('orders').update({ nfe_status: 'PROCESSANDO' }).eq('id', orderId);
+
+    // 1. Busca os dados do pedido e traz também o campo 'ncm' dos produtos
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select(`
+        id, order_number, payment_method,
+        clients ( id, name, base_erp_id ),
+        order_items ( qty, price, products ( id, name, base_erp_id, ncm ) )
+      `)
+      .eq('id', orderId)
+      .single();
+
+    if (orderErr || !order) throw new Error("Pedido não encontrado no banco de dados.");
+
+    const client: any = Array.isArray(order.clients) ? order.clients[0] : order.clients;
+    const today = new Date().toISOString().split('T')[0];
+    const orderTotal = order.order_items.reduce((acc: number, item: any) => acc + (item.qty * item.price), 0);
+
+    // 2. Garante que os NCMs salvos no Supabase sejam sincronizados com o Base ERP antes de emitir a nota
+    for (const item of order.order_items) {
+      const product = Array.isArray(item.products) ? item.products[0] : item.products;
+
+      if (!product?.base_erp_id) {
+        throw new Error(`Produto "${product?.name || 'Desconhecido'}" não está sincronizado com o ERP.`);
+      }
+
+      if (!product?.ncm) {
+        throw new Error(`Produto "${product?.name}" está sem NCM cadastrado.`);
+      }
+
+      // Atualiza o cadastro do produto no Base ERP com o NCM atualizado
+      await fetch(`${ERP_URL}/api/v1/products/${product.base_erp_id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'access_token': ERP_KEY
+        },
+        body: JSON.stringify({ ncm: product.ncm })
+      }).catch(err => {
+        console.warn(`[NFE WARN] Falha ao sincronizar NCM do produto ${product.id} no ERP:`, err);
+      });
+    }
+
+    // 3. Monta o payload do pedido de venda
+    const createOrderPayload = {
+      issueDate: today,
+      customerId: Number(client.base_erp_id),
+      externalReference: order.id.toString(),
+      orderItems: order.order_items.map((item: any) => {
+        const product = Array.isArray(item.products) ? item.products[0] : item.products;
+        return {
+          productId: Number(product.base_erp_id),
+          quantity: item.qty,
+          unitPrice: item.price
+        };
+      }),
+      orderPayments: [
+        {
+          bankId: process.env.BASE_ERP_BANK_ID ? Number(process.env.BASE_ERP_BANK_ID) : 100129450, 
+          billingType: "UNDEFINED", 
+          dueDate: today,
+          value: orderTotal,
+          generateCharge: false
+        }
+      ]
+    };
+
+    // 4. Cria o Pedido de Venda no ERP
+    const createOrderRes = await fetch(`${ERP_URL}/api/v1/salesOrders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'access_token': ERP_KEY
+      },
+      body: JSON.stringify(createOrderPayload)
+    });
+
+    const createOrderData = await createOrderRes.json().catch(() => null);
+
+    if (!createOrderRes.ok) {
+       throw new Error(`Falha ao criar pedido no ERP: ${createOrderData ? JSON.stringify(createOrderData) : createOrderRes.status}`);
+    }
+
+    const baseErpOrderId = createOrderData.id;
+
+    // Guardar o ID do pedido gerado no ERP
+    await supabase.from('orders').update({
+      base_erp_order_id: baseErpOrderId.toString()
+    }).eq('id', orderId);
+
+    // 5. Solicita a emissão da NF-e (Modelo 55)
+    const invoiceRes = await fetchWithRetry(`${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}/invoice`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'access_token': ERP_KEY
+      },
+      body: JSON.stringify({ type: "55" })
+    });
+
+    const finalStatus = invoiceRes.invoiceStatus === 'EMITIDA' ? 'EMITIDA' : 'PROCESSANDO';
+
+    await supabase.from('orders').update({
+      nfe_status: finalStatus,
+      nfe_number: invoiceRes.invoiceNumber?.toString(),
+    }).eq('id', orderId);
+
+    await supabase.from('order_history').insert({
+      order_id: orderId,
+      status: 'novo',
+      changed_by: 'Sistema (ERP)',
+      note: `Nota Fiscal solicitada via Base ERP. Status: ${invoiceRes.invoiceStatus}`
+    });
+
+    return NextResponse.json({ 
+      success: true, 
+      status: finalStatus,
+      nfe_number: invoiceRes.invoiceNumber 
+    });
+
+  } catch (error: any) {
+    console.error("❌ [NFE ERROR]", error.message);
+    
+    if (orderId) {
+      await supabase.from('orders').update({ nfe_status: 'ERRO' }).eq('id', orderId);
+    }
+
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
 </file>
@@ -15951,380 +15104,330 @@ export function CicloPedidos({
 }
 </file>
 
-<file path="src/components/layout/LoginScreen.tsx">
+<file path="src/components/layout/AdminShell.tsx">
 "use client";
+
 import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "motion/react";
-import { KeyRound } from "lucide-react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import {
+  LayoutDashboard,
+  ShoppingCart,
+  Users,
+  Package,
+  UserCheck,
+  Bell,
+  Search,
+  Menu,
+  X,
+  ChevronDown,
+  LogOut,
+  Settings,
+  Route,
+  Layers,
+  Clock,
+} from "lucide-react";
 import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
+import { useApp } from "@/contexts/AppContext";
 import { supabase } from "@/utils/supabase";
-import type { UserRole } from "@/types";
+
+// 1. IMPORT DO MOTOR DE PUSH
+import { usePushNotifications } from "@/hooks/usePushNotifications";
 
 const logoImg = "/logo.png";
 
-export function LoginScreen({
-  onLogin,
-}: {
-  onLogin: (role: UserRole, sellerId?: number) => void;
-}) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [showCreds, setShowCreds] = useState(false);
+const navItems: { href: string; label: string; icon: React.ElementType }[] = [
+  { href: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/admin/pedidos", label: "Pedidos", icon: ShoppingCart },
+  { href: "/admin/clientes", label: "Clientes", icon: Users },
+  { href: "/admin/produtos", label: "Produtos / Estoque", icon: Package },
+  { href: "/admin/vendedores", label: "Vendedores", icon: UserCheck },
+  { href: "/admin/rotas", label: "Rotas Inteligentes", icon: Route },
+  { href: "/admin/ciclo", label: "Ciclo de Pedidos", icon: Layers },
+];
 
-  const [demoAccounts, setDemoAccounts] = useState<any[]>([]);
+const notifications = [
+  {
+    id: 1,
+    msg: "Novo pedido de Distribuidora Norte & Sul",
+    type: "info",
+    time: "18 min",
+  },
+  {
+    id: 2,
+    msg: "Fernanda Costa atingiu 98% da meta!",
+    type: "success",
+    time: "1h",
+  },
+];
+
+export function AdminShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { logout, urgentActive } = useApp();
+
+  // 2. ATIVAÇÃO INVISÍVEL DAS NOTIFICAÇÕES PARA O ADMIN
+  // Pede a permissão e registra o Service Worker no Supabase como 'admin'
+  usePushNotifications();
+
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  // Estado real para contar produtos com baixo estoque no Supabase
+  const [lowStockCount, setLowStockCount] = useState(0);
 
   useEffect(() => {
-    async function fetchAccounts() {
-      const { data } = await supabase.from("accounts").select("*").limit(5);
-      if (data) setDemoAccounts(data);
+    async function fetchLowStock() {
+      // Usamos count para não precisar baixar todos os dados, apenas o número
+      const { count } = await supabase
+        .from("products")
+        .select("*", { count: "exact", head: true })
+        .lt("stock", 15);
+      if (count !== null) setLowStockCount(count);
     }
-    fetchAccounts();
+    fetchLowStock();
   }, []);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!email || !password) {
-      setError("Preencha e-mail e senha.");
-      return;
-    }
-    setError("");
-    setLoading(true);
-
-    try {
-      const { data: acc, error: authError } = await supabase
-        .from("accounts")
-        .select("*")
-        .eq("email", email.trim().toLowerCase())
-        .eq("password_hash", password)
-        .single();
-
-      if (authError || !acc) {
-        setError("E-mail ou senha incorretos.");
-        setLoading(false);
-        return;
-      }
-
-      setTimeout(() => {
-        setLoading(false);
-        // CORREÇÃO CRÍTICA: Força o texto para minúsculo para bater com a tipagem ("vendedor" ou "gestor")
-        const safeRole = String(acc.role).toLowerCase() as UserRole;
-        // Puxa o ID do vendedor cobrindo os padrões de nomenclatura do Supabase
-        const safeSellerId = acc.seller_id || acc.sellerId || undefined;
-
-        onLogin(safeRole, safeSellerId);
-      }, 800);
-    } catch (err) {
-      console.error(err);
-      setError("Erro ao conectar no servidor.");
-      setLoading(false);
-    }
+  function handleLogout() {
+    logout();
+    router.push("/login");
   }
 
-  function quickFill(acc: any) {
-    setEmail(acc.email);
-    setPassword(acc.password_hash);
-    setShowCreds(false);
+  function isActive(href: string) {
+    return pathname === href || pathname.startsWith(`${href}/`);
   }
 
   return (
     <div
-      className="relative min-h-screen w-full overflow-hidden flex items-center justify-center"
-      style={{
-        background:
-          "linear-gradient(135deg, #0e2410 0%, #1a3a1c 40%, #1e4d22 70%, #2a6030 100%)",
-      }}
+      className="flex h-screen bg-background overflow-hidden"
+      style={{ fontFamily: "'Inter', sans-serif" }}
     >
-      <div
-        className="absolute -top-32 -left-32 w-96 h-96 rounded-full opacity-10"
-        style={{
-          background: "radial-gradient(circle, #c8921c 0%, transparent 70%)",
-        }}
-      />
-      <div
-        className="absolute -bottom-40 -right-20 w-[500px] h-[500px] rounded-full opacity-10"
-        style={{
-          background: "radial-gradient(circle, #c8921c 0%, transparent 70%)",
-        }}
-      />
-      <div
-        className="absolute top-1/2 left-1/4 w-64 h-64 rounded-full opacity-5"
-        style={{
-          background: "radial-gradient(circle, #ffffff 0%, transparent 70%)",
-        }}
-      />
-      <div
-        className="absolute inset-0 opacity-[0.03]"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)",
-          backgroundSize: "40px 40px",
-        }}
-      />
-
-      {[
-        { top: "8%", left: "6%", size: 80, delay: 0, rotate: -20 },
-        { top: "75%", left: "4%", size: 56, delay: 1.2, rotate: 30 },
-        { top: "15%", right: "5%", size: 64, delay: 0.6, rotate: 15 },
-        { top: "80%", right: "8%", size: 72, delay: 1.8, rotate: -35 },
-      ].map((leaf, i) => (
-        <motion.div
-          key={i}
-          className="absolute opacity-10 rounded-full border-2 border-[#c8921c]"
-          style={{
-            top: leaf.top,
-            left: (leaf as any).left,
-            right: (leaf as any).right,
-            width: leaf.size,
-            height: leaf.size,
-            rotate: leaf.rotate,
-          }}
-          animate={{
-            y: [0, -12, 0],
-            rotate: [leaf.rotate, leaf.rotate + 8, leaf.rotate],
-          }}
-          transition={{
-            duration: 4 + i,
-            repeat: Infinity,
-            delay: leaf.delay,
-            ease: "easeInOut",
-          }}
+      {/* Overlay com desfoque premium no mobile */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
         />
-      ))}
+      )}
 
-      <motion.div
-        initial={{ opacity: 0, y: 40, scale: 0.95 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-        className="relative z-10 w-full max-w-sm mx-4"
+      <aside
+        className={`fixed lg:static inset-y-0 left-0 z-40 w-64 bg-sidebar flex flex-col transition-transform duration-300 ease-in-out ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        }`}
       >
-        <div className="flex flex-col items-center mb-8">
-          <motion.div
-            initial={{ scale: 0.6, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{
-              duration: 0.8,
-              delay: 0.15,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-            className="relative mb-5"
-          >
-            <div
-              className="absolute inset-0 rounded-full blur-2xl opacity-40"
-              style={{
-                background:
-                  "radial-gradient(circle, #c8921c 0%, transparent 70%)",
-                transform: "scale(1.4)",
-              }}
+        <div className="flex items-center gap-3 px-4 py-4 border-b border-sidebar-border">
+          <div className="w-12 h-12 rounded-full overflow-hidden flex-shrink-0 ring-2 ring-amber-600/40">
+            <ImageWithFallback
+              src={logoImg}
+              alt="PNZ Frios"
+              className="w-full h-full object-cover"
             />
-            <div
-              className="relative w-36 h-36 rounded-full overflow-hidden ring-4 ring-[#c8921c]/60 shadow-2xl"
-              style={{
-                boxShadow:
-                  "0 0 40px rgba(200,146,28,0.35), 0 20px 60px rgba(0,0,0,0.5)",
-              }}
-            >
-              <ImageWithFallback
-                src={logoImg}
-                alt="PNZ Frios"
-                className="w-full h-full object-cover"
-              />
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.35 }}
-            className="text-center"
-          >
-            <p className="text-white/50 text-xs tracking-[0.25em] uppercase font-medium">
+          </div>
+          <div>
+            <p className="text-sm font-bold text-white leading-tight">
+              PNZ Frios
+            </p>
+            <p className="text-[10px] text-sidebar-foreground/50 leading-tight">
               Sistema de Gestão
             </p>
-          </motion.div>
+          </div>
+          <button
+            className="ml-auto lg:hidden text-sidebar-foreground/60 hover:text-white"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.45 }}
-          className="rounded-2xl p-7 shadow-2xl"
-          style={{
-            background: "rgba(255,255,255,0.06)",
-            backdropFilter: "blur(24px)",
-            border: "1px solid rgba(255,255,255,0.10)",
-          }}
-        >
-          <h2 className="text-white text-lg font-semibold mb-1">
-            Bem-vindo de volta
-          </h2>
-          <p className="text-white/40 text-xs mb-6">
-            Acesse sua conta para continuar
+        <nav className="flex-1 px-3 py-4 space-y-1.5 overflow-y-auto custom-scrollbar">
+          <p className="text-[10px] font-bold text-sidebar-foreground/50 uppercase tracking-widest px-3 mb-3">
+            Menu Principal
           </p>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-white/60 mb-1.5">
-                E-mail
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="seu@email.com"
-                className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#c8921c]/60 transition"
-                style={{
-                  background: "rgba(255,255,255,0.08)",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                }}
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-white/60 mb-1.5">
-                Senha
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#c8921c]/60 transition"
-                style={{
-                  background: "rgba(255,255,255,0.08)",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                }}
-              />
-            </div>
-
-            {error && (
-              <motion.p
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="text-red-400 text-xs text-center bg-red-400/10 rounded-lg py-2 px-3"
-              >
-                {error}
-              </motion.p>
-            )}
-
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <div
-                  className="w-4 h-4 rounded border border-white/20 flex items-center justify-center"
-                  style={{ background: "rgba(255,255,255,0.08)" }}
-                >
-                  <div className="w-2 h-2 rounded-sm bg-[#c8921c]" />
-                </div>
-                <span className="text-xs text-white/40">Lembrar-me</span>
-              </label>
-              <button
-                type="button"
-                className="text-xs text-[#c8921c]/80 hover:text-[#c8921c] transition-colors"
-              >
-                Esqueceu a senha?
-              </button>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="relative w-full py-3.5 rounded-xl font-semibold text-sm overflow-hidden transition-all active:scale-[0.98] mt-2"
-              style={{
-                background: loading
-                  ? "rgba(200,146,28,0.6)"
-                  : "linear-gradient(135deg, #c8921c 0%, #e0a820 100%)",
-                color: "#fff",
-                boxShadow: loading ? "none" : "0 4px 20px rgba(200,146,28,0.4)",
-              }}
+          {navItems.map(({ href, label, icon: Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              onClick={() => setSidebarOpen(false)}
+              className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl text-sm font-medium transition-all active:scale-[0.98] ${
+                isActive(href)
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-md"
+                  : "text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-white"
+              }`}
             >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <motion.span
-                    className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white inline-block"
-                    animate={{ rotate: 360 }}
-                    transition={{
-                      duration: 0.8,
-                      repeat: Infinity,
-                      ease: "linear",
-                    }}
-                  />
-                  Entrando...
+              <Icon className="w-5 h-5 flex-shrink-0" />
+              {label}
+
+              {/* Badge dinâmico vindo do Supabase */}
+              {href === "/admin/produtos" && lowStockCount > 0 && (
+                <span className="ml-auto w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">
+                  {lowStockCount}
                 </span>
-              ) : (
-                "Entrar no Sistema"
               )}
-            </button>
-          </form>
-        </motion.div>
+              {href === "/admin/ciclo" && urgentActive > 0 && (
+                <span className="ml-auto w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                  {urgentActive}
+                </span>
+              )}
+            </Link>
+          ))}
+        </nav>
 
-        {demoAccounts.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 1 }}
-            className="mt-4"
-          >
+        <div className="px-3 py-4 border-t border-sidebar-border">
+          <div className="flex items-center gap-3 px-2">
+            <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+              AC
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-white truncate">
+                Admin Central
+              </p>
+              <p className="text-[10px] text-sidebar-foreground/50">Gestor</p>
+            </div>
             <button
-              onClick={() => setShowCreds((v) => !v)}
-              className="w-full flex items-center justify-center gap-1.5 text-xs text-white/30 hover:text-white/60 transition-colors py-1"
+              onClick={handleLogout}
+              className="text-sidebar-foreground/50 hover:text-white transition-colors"
             >
-              <KeyRound className="w-3 h-3" />
-              {showCreds ? "Ocultar" : "Ver"} contas cadastradas
+              <LogOut className="w-4 h-4" />
             </button>
-            <AnimatePresence>
-              {showCreds && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden mt-3 rounded-xl"
-                  style={{
-                    background: "rgba(0,0,0,0.35)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                  }}
-                >
-                  <div className="p-3 space-y-1">
-                    <p className="text-[10px] text-white/30 uppercase tracking-widest mb-2 font-semibold">
-                      Clique para preencher (Modo Dev)
+          </div>
+        </div>
+      </aside>
+
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <header className="bg-card border-b border-border px-4 lg:px-6 py-3 flex items-center gap-3 flex-shrink-0 shadow-sm">
+          <button
+            className="lg:hidden p-2 rounded-lg hover:bg-secondary transition-colors"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu className="w-5 h-5 text-foreground" />
+          </button>
+
+          <div className="relative flex-1 max-w-sm hidden sm:block">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              placeholder="Busca rápida..."
+              className="w-full pl-9 pr-4 py-2 rounded-lg border border-border bg-card text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"
+            />
+          </div>
+
+          <div className="ml-auto flex items-center gap-2">
+            <div className="relative">
+              <button
+                onClick={() => {
+                  setNotifOpen(!notifOpen);
+                  setProfileOpen(false);
+                }}
+                className="relative p-2 rounded-lg hover:bg-secondary transition-colors"
+              >
+                <Bell className="w-5 h-5 text-muted-foreground" />
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
+              </button>
+
+              {notifOpen && (
+                <div className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                    <p className="text-sm font-semibold text-foreground">
+                      Notificações
                     </p>
-                    {demoAccounts.map((acc) => (
-                      <button
-                        key={acc.email}
-                        onClick={() => quickFill(acc)}
-                        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors text-left"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0 ${acc.role.toLowerCase() === "gestor" ? "bg-[#c8921c]" : "bg-[#1e4023]"}`}
-                          >
-                            {acc.avatar}
-                          </span>
-                          <div>
-                            <p className="text-xs text-white/80 font-medium leading-none">
-                              {acc.name}
-                            </p>
-                            <p className="text-[10px] text-white/30 mt-0.5">
-                              {acc.email}
-                            </p>
-                          </div>
+                    <span className="text-xs text-muted-foreground">
+                      {notifications.length + (lowStockCount > 0 ? 1 : 0)} novas
+                    </span>
+                  </div>
+                  <div className="divide-y divide-border max-h-72 overflow-y-auto">
+                    {/* Injeta a notificação de estoque dinamicamente se houver */}
+                    {lowStockCount > 0 && (
+                      <div className="flex gap-3 px-4 py-3 hover:bg-secondary/40 transition-colors">
+                        <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-amber-500" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-foreground leading-snug">
+                            Atenção: {lowStockCount} produto(s) com estoque
+                            crítico!
+                          </p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            Agora
+                          </p>
                         </div>
-                        <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${acc.role.toLowerCase() === "gestor" ? "bg-[#c8921c]/20 text-[#c8921c]" : "bg-emerald-900/40 text-emerald-400"}`}
-                        >
-                          {acc.role.toLowerCase() === "gestor"
-                            ? "Gestor"
-                            : "Vendedor"}
-                        </span>
-                      </button>
+                      </div>
+                    )}
+
+                    {notifications.map((n) => (
+                      <div
+                        key={n.id}
+                        className="flex gap-3 px-4 py-3 hover:bg-secondary/40 transition-colors"
+                      >
+                        <div
+                          className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${
+                            n.type === "warn"
+                              ? "bg-amber-500"
+                              : n.type === "success"
+                                ? "bg-[#2d6a3a]"
+                                : "bg-[#1e4023]"
+                          }`}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-foreground leading-snug">
+                            {n.msg}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {n.time} atrás
+                          </p>
+                        </div>
+                      </div>
                     ))}
                   </div>
-                </motion.div>
+                </div>
               )}
-            </AnimatePresence>
-          </motion.div>
-        )}
-      </motion.div>
+            </div>
+
+            <div className="relative">
+              <button
+                onClick={() => {
+                  setProfileOpen(!profileOpen);
+                  setNotifOpen(false);
+                }}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-secondary transition-colors"
+              >
+                <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
+                  AC
+                </div>
+                <span className="hidden sm:block text-sm font-medium text-foreground">
+                  Admin
+                </span>
+                <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+              </button>
+
+              {profileOpen && (
+                <div className="absolute right-0 top-full mt-2 w-44 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+                  {[
+                    {
+                      icon: Settings,
+                      label: "Configurações",
+                      action: () => {},
+                    },
+                    { icon: LogOut, label: "Sair", action: handleLogout },
+                  ].map(({ icon: Icon, label, action }) => (
+                    <button
+                      key={label}
+                      onClick={action}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-foreground hover:bg-secondary/50 transition-colors"
+                    >
+                      <Icon className="w-4 h-4 text-muted-foreground" />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-y-auto px-4 lg:px-6 py-6">
+          <div className="max-w-7xl mx-auto">{children}</div>
+        </main>
+      </div>
     </div>
   );
 }
@@ -17382,6 +16485,935 @@ export function useKanban() {
 }
 </file>
 
+<file path="src/components/layout/LoginScreen.tsx">
+"use client";
+import { useState } from "react";
+import { motion } from "motion/react";
+import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
+import { supabase } from "@/utils/supabase";
+import type { UserRole } from "@/types";
+
+const logoImg = "/logo.png";
+
+export function LoginScreen({
+  onLogin,
+}: {
+  onLogin: (role: UserRole, sellerId?: number) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email || !password) {
+      setError("Preencha e-mail e senha.");
+      return;
+    }
+    setError("");
+    setLoading(true);
+
+    try {
+      const { data: acc, error: authError } = await supabase
+        .from("accounts")
+        .select("*")
+        .eq("email", email.trim().toLowerCase())
+        .eq("password_hash", password)
+        .single();
+
+      if (authError || !acc) {
+        setError("E-mail ou senha incorretos.");
+        setLoading(false);
+        return;
+      }
+
+      setTimeout(() => {
+        setLoading(false);
+        const safeRole = String(acc.role).toLowerCase() as UserRole;
+        const safeSellerId = acc.seller_id || acc.sellerId || undefined;
+
+        onLogin(safeRole, safeSellerId);
+      }, 800);
+    } catch (err) {
+      console.error(err);
+      setError("Erro ao conectar no servidor.");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div
+      className="relative min-h-screen w-full overflow-hidden flex items-center justify-center"
+      style={{
+        background:
+          "linear-gradient(135deg, #0e2410 0%, #1a3a1c 40%, #1e4d22 70%, #2a6030 100%)",
+      }}
+    >
+      <div
+        className="absolute -top-32 -left-32 w-96 h-96 rounded-full opacity-10"
+        style={{
+          background: "radial-gradient(circle, #c8921c 0%, transparent 70%)",
+        }}
+      />
+      <div
+        className="absolute -bottom-40 -right-20 w-[500px] h-[500px] rounded-full opacity-10"
+        style={{
+          background: "radial-gradient(circle, #c8921c 0%, transparent 70%)",
+        }}
+      />
+      <div
+        className="absolute top-1/2 left-1/4 w-64 h-64 rounded-full opacity-5"
+        style={{
+          background: "radial-gradient(circle, #ffffff 0%, transparent 70%)",
+        }}
+      />
+      <div
+        className="absolute inset-0 opacity-[0.03]"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)",
+          backgroundSize: "40px 40px",
+        }}
+      />
+
+      {[
+        { top: "8%", left: "6%", size: 80, delay: 0, rotate: -20 },
+        { top: "75%", left: "4%", size: 56, delay: 1.2, rotate: 30 },
+        { top: "15%", right: "5%", size: 64, delay: 0.6, rotate: 15 },
+        { top: "80%", right: "8%", size: 72, delay: 1.8, rotate: -35 },
+      ].map((leaf, i) => (
+        <motion.div
+          key={i}
+          className="absolute opacity-10 rounded-full border-2 border-[#c8921c]"
+          style={{
+            top: leaf.top,
+            left: (leaf as any).left,
+            right: (leaf as any).right,
+            width: leaf.size,
+            height: leaf.size,
+            rotate: leaf.rotate,
+          }}
+          animate={{
+            y: [0, -12, 0],
+            rotate: [leaf.rotate, leaf.rotate + 8, leaf.rotate],
+          }}
+          transition={{
+            duration: 4 + i,
+            repeat: Infinity,
+            delay: leaf.delay,
+            ease: "easeInOut",
+          }}
+        />
+      ))}
+
+      <motion.div
+        initial={{ opacity: 0, y: 40, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+        className="relative z-10 w-full max-w-sm mx-4"
+      >
+        <div className="flex flex-col items-center mb-8">
+          <motion.div
+            initial={{ scale: 0.6, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{
+              duration: 0.8,
+              delay: 0.15,
+              ease: [0.22, 1, 0.36, 1],
+            }}
+            className="relative mb-5"
+          >
+            <div
+              className="absolute inset-0 rounded-full blur-2xl opacity-40"
+              style={{
+                background:
+                  "radial-gradient(circle, #c8921c 0%, transparent 70%)",
+                transform: "scale(1.4)",
+              }}
+            />
+            <div
+              className="relative w-36 h-36 rounded-full overflow-hidden ring-4 ring-[#c8921c]/60 shadow-2xl"
+              style={{
+                boxShadow:
+                  "0 0 40px rgba(200,146,28,0.35), 0 20px 60px rgba(0,0,0,0.5)",
+              }}
+            >
+              <ImageWithFallback
+                src={logoImg}
+                alt="PNZ Frios"
+                className="w-full h-full object-cover"
+              />
+            </div>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.35 }}
+            className="text-center"
+          >
+            <p className="text-white/50 text-xs tracking-[0.25em] uppercase font-medium">
+              Sistema de Gestão
+            </p>
+          </motion.div>
+        </div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.45 }}
+          className="rounded-2xl p-7 shadow-2xl"
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            backdropFilter: "blur(24px)",
+            border: "1px solid rgba(255,255,255,0.10)",
+          }}
+        >
+          <h2 className="text-white text-lg font-semibold mb-1">
+            Bem-vindo de volta
+          </h2>
+          <p className="text-white/40 text-xs mb-6">
+            Acesse sua conta para continuar
+          </p>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-white/60 mb-1.5">
+                E-mail
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="seu@email.com"
+                className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#c8921c]/60 transition"
+                style={{
+                  background: "rgba(255,255,255,0.08)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                }}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-white/60 mb-1.5">
+                Senha
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-[#c8921c]/60 transition"
+                style={{
+                  background: "rgba(255,255,255,0.08)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                }}
+              />
+            </div>
+
+            {error && (
+              <motion.p
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-red-400 text-xs text-center bg-red-400/10 rounded-lg py-2 px-3"
+              >
+                {error}
+              </motion.p>
+            )}
+
+            <div className="flex items-center justify-between pt-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <div
+                  className="w-4 h-4 rounded border border-white/20 flex items-center justify-center"
+                  style={{ background: "rgba(255,255,255,0.08)" }}
+                >
+                  <div className="w-2 h-2 rounded-sm bg-[#c8921c]" />
+                </div>
+                <span className="text-xs text-white/40">Lembrar-me</span>
+              </label>
+              <button
+                type="button"
+                className="text-xs text-[#c8921c]/80 hover:text-[#c8921c] transition-colors"
+              >
+                Esqueceu a senha?
+              </button>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="relative w-full py-3.5 rounded-xl font-semibold text-sm overflow-hidden transition-all active:scale-[0.98] mt-2"
+              style={{
+                background: loading
+                  ? "rgba(200,146,28,0.6)"
+                  : "linear-gradient(135deg, #c8921c 0%, #e0a820 100%)",
+                color: "#fff",
+                boxShadow: loading ? "none" : "0 4px 20px rgba(200,146,28,0.4)",
+              }}
+            >
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <motion.span
+                    className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white inline-block"
+                    animate={{ rotate: 360 }}
+                    transition={{
+                      duration: 0.8,
+                      repeat: Infinity,
+                      ease: "linear",
+                    }}
+                  />
+                  Entrando...
+                </span>
+              ) : (
+                "Entrar no Sistema"
+              )}
+            </button>
+          </form>
+        </motion.div>
+      </motion.div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/ui/OrderDetailModal.tsx">
+"use client";
+import { useState } from "react";
+import { motion } from "motion/react";
+import {
+  X,
+  Zap,
+  MapPin,
+  User2,
+  StickyNote,
+  ChevronRight,
+  FileText,
+  CheckCircle,
+  RefreshCw,
+  Wallet,
+  Copy,
+  AlertTriangle,
+} from "lucide-react";
+import { colFor, nextStatus } from "@/utils/kanban";
+import { fmt } from "@/utils/format";
+import { supabase } from "@/utils/supabase";
+import type { KanbanOrder } from "@/types";
+
+export function OrderDetailModal({
+  order,
+  onClose,
+  onAdvance,
+  onCancel,
+  onAddNote,
+  isAdmin,
+}: {
+  order: KanbanOrder & {
+    nfeStatus?: string;
+    nfeUrl?: string;
+    nfeNumber?: string;
+    paymentUrl?: string;
+    paymentMethod?: string;
+  };
+  onClose: () => void;
+  onAdvance: (id: string, note: string) => void;
+  onCancel: (id: string, note: string) => void;
+  onAddNote: (id: string, note: string) => void;
+  isAdmin: boolean;
+}) {
+  const [note, setNote] = useState("");
+  const [confirmCancel, setConfirmCancel] = useState(false);
+
+  const [isEmittingNfe, setIsEmittingNfe] = useState(false);
+  const [isCheckingNfe, setIsCheckingNfe] = useState(false);
+  const [localNfeStatus, setLocalNfeStatus] = useState(order.nfeStatus);
+  const [localNfeUrl, setLocalNfeUrl] = useState(order.nfeUrl);
+
+  const [isNcmModalOpen, setIsNcmModalOpen] = useState(false);
+  const [itemsMissingNcm, setItemsMissingNcm] = useState<any[]>([]);
+  const [ncmValues, setNcmValues] = useState<Record<string, string>>({});
+  const [isSavingNcm, setIsSavingNcm] = useState(false);
+
+  const col = colFor(order.status) || {
+    bg: "bg-gray-50",
+    color: "text-gray-700",
+    border: "border-gray-200",
+    dot: "bg-gray-500",
+    label: "Desconhecido",
+  };
+  const next = nextStatus(order.status);
+  const nextCol = next ? colFor(next) : null;
+
+  const canAdvance = isAdmin ? !!next : order.status === "rota";
+  const canCancel =
+    isAdmin && order.status !== "entregue" && order.status !== "cancelado";
+
+  async function handlePrepararEmissao() {
+    if (
+      !confirm(
+        "Confirmar a emissão da Nota Fiscal Eletrônica para este pedido?",
+      )
+    )
+      return;
+
+    setIsEmittingNfe(true);
+    try {
+      const { data: orderDetails, error } = await supabase
+        .from("order_items")
+        .select(
+          `
+          id, 
+          product_id, 
+          products ( id, name, ncm )
+        `,
+        )
+        .eq("order_id", order.id);
+
+      if (error) throw error;
+
+      const missing = (orderDetails || []).filter(
+        (item: any) =>
+          !item.products?.ncm ||
+          item.products.ncm.replace(/\D/g, "").length < 8,
+      );
+
+      if (missing.length > 0) {
+        setItemsMissingNcm(missing);
+        setIsNcmModalOpen(true);
+        setIsEmittingNfe(false);
+        return;
+      }
+
+      await processNfeEmission();
+    } catch (err: any) {
+      console.error("Erro ao verificar itens do pedido:", err);
+      alert("Erro ao validar os produtos. Verifique sua conexão.");
+      setIsEmittingNfe(false);
+    }
+  }
+
+  async function handleSaveNcmAndEmit() {
+    const invalid = itemsMissingNcm.some(
+      (item) => (ncmValues[item.product_id] || "").length !== 8,
+    );
+    if (invalid) {
+      alert(
+        "Por favor, preencha todos os campos de NCM com exatamente 8 dígitos.",
+      );
+      return;
+    }
+
+    setIsSavingNcm(true);
+    try {
+      for (const item of itemsMissingNcm) {
+        await supabase
+          .from("products")
+          .update({ ncm: ncmValues[item.product_id] })
+          .eq("id", item.product_id);
+      }
+
+      setIsNcmModalOpen(false);
+      setIsEmittingNfe(true);
+
+      await processNfeEmission();
+    } catch (err) {
+      console.error("Erro ao salvar NCMs:", err);
+      alert("Falha ao salvar os dados fiscais. Tente novamente.");
+    } finally {
+      setIsSavingNcm(false);
+    }
+  }
+
+  async function processNfeEmission() {
+    try {
+      const res = await fetch("/api/nfe/emitir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: order.id }),
+      });
+      const data = await res.json();
+
+      if (!res.ok)
+        throw new Error(data.error || "Erro desconhecido ao emitir NF-e");
+
+      const novoStatus = data.status === "EMITIDA" ? "EMITIDA" : "PROCESSANDO";
+      const novaUrl = data.nfe_url || "";
+
+      await supabase
+        .from("orders")
+        .update({
+          nfe_status: novoStatus,
+          nfe_url: novaUrl,
+          nfe_number: data.nfe_number?.toString(),
+        })
+        .eq("id", order.id);
+
+      setLocalNfeStatus(novoStatus);
+      setLocalNfeUrl(novaUrl);
+    } catch (err: any) {
+      console.error("Erro NFe:", err);
+      setLocalNfeStatus("ERRO");
+      await supabase
+        .from("orders")
+        .update({ nfe_status: "ERRO" })
+        .eq("id", order.id);
+      alert(`Falha na emissão da NF-e: ${err.message}`);
+    } finally {
+      setIsEmittingNfe(false);
+    }
+  }
+
+  async function handleCheckNfeStatus() {
+    setIsCheckingNfe(true);
+    try {
+      const res = await fetch("/api/nfe/consultar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: order.id }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Erro ao consultar status na SEFAZ.");
+      }
+
+      setLocalNfeStatus(data.status);
+      if (data.url) setLocalNfeUrl(data.url);
+
+      if (data.status === "EMITIDA") {
+        alert("Nota Fiscal autorizada com sucesso!");
+        window.location.reload();
+      } else if (data.status === "ERRO") {
+        alert(
+          "A SEFAZ rejeitou a nota. Verifique o painel do ERP para corrigir.",
+        );
+      } else {
+        alert("A nota ainda está em processamento na SEFAZ.");
+      }
+    } catch (err: any) {
+      console.error("Erro detalhado na consulta:", err);
+      alert(`Falha ao consultar SEFAZ: ${err.message}`);
+    } finally {
+      setIsCheckingNfe(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.25 }}
+        className="relative bg-card w-full max-w-lg rounded-2xl shadow-2xl border border-border overflow-hidden max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {isNcmModalOpen && (
+          <div className="absolute inset-0 z-[60] bg-card flex flex-col">
+            <div className="px-5 py-4 border-b border-border flex items-center justify-between bg-yellow-50/50">
+              <div className="flex items-center gap-2 text-yellow-800">
+                <AlertTriangle className="w-5 h-5" />
+                <h3 className="text-sm font-bold">Dados Fiscais Pendentes</h3>
+              </div>
+              <button
+                onClick={() => setIsNcmModalOpen(false)}
+                className="p-1 hover:bg-yellow-100 rounded-md transition-colors"
+              >
+                <X className="w-4 h-4 text-yellow-800" />
+              </button>
+            </div>
+
+            <div className="p-5 flex-1 overflow-y-auto space-y-4">
+              <p className="text-xs text-muted-foreground mb-4">
+                Para emitir a nota fiscal, a SEFAZ exige a classificação NCM dos
+                produtos. Preencha os códigos de 8 dígitos abaixo (eles serão
+                salvos para as próximas vendas):
+              </p>
+
+              <div className="space-y-4">
+                {itemsMissingNcm.map((item) => (
+                  <div
+                    key={item.id}
+                    className="bg-secondary/20 p-3 rounded-lg border border-border"
+                  >
+                    <label className="text-sm font-semibold text-foreground">
+                      {item.products.name}
+                    </label>
+                    <input
+                      type="text"
+                      value={ncmValues[item.product_id] || ""}
+                      onChange={(e) => {
+                        const val = e.target.value
+                          .replace(/\D/g, "")
+                          .slice(0, 8);
+                        setNcmValues({ ...ncmValues, [item.product_id]: val });
+                      }}
+                      placeholder="Ex: 02071100"
+                      className="mt-2 w-full px-3 py-2 border border-border rounded-md text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      maxLength={8}
+                    />
+                    {(ncmValues[item.product_id] || "").length > 0 &&
+                      (ncmValues[item.product_id] || "").length < 8 && (
+                        <span className="text-[10px] text-red-500 mt-1 block">
+                          Faltam {8 - (ncmValues[item.product_id] || "").length}{" "}
+                          dígitos
+                        </span>
+                      )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-border flex gap-2 bg-secondary/10">
+              <button
+                onClick={() => setIsNcmModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-muted-foreground hover:bg-secondary rounded-xl transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveNcmAndEmit}
+                disabled={isSavingNcm}
+                className="flex-1 flex items-center justify-center bg-primary text-primary-foreground font-bold text-xs rounded-xl py-2 hover:bg-[#163318] transition-colors disabled:opacity-50"
+              >
+                {isSavingNcm
+                  ? "Salvando e Emitindo..."
+                  : "Salvar e Emitir NF-e"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className={`h-1.5 w-full ${col.dot}`} />
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-border">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-base font-black text-foreground">
+                {order.orderNumber}
+              </span>
+              {order.priority === "Urgente" && (
+                <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">
+                  <Zap className="w-2.5 h-2.5" />
+                  URGENTE
+                </span>
+              )}
+              <span
+                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${col.bg} ${col.color} ${col.border}`}
+              >
+                {col.label}
+              </span>
+            </div>
+            <p className="text-sm font-semibold text-foreground">
+              {order.clientName}
+            </p>
+            <p className="text-xs text-muted-foreground flex items-center gap-3 mt-0.5">
+              <span className="flex items-center gap-1">
+                <User2 className="w-3 h-3" />
+                {order.sellerName}
+              </span>
+              <span className="flex items-center gap-1">
+                <MapPin className="w-3 h-3" />
+                {order.deliveryAddress?.split(" ")[1]?.trim() || "Sem endereço"}
+              </span>
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-muted transition-colors flex-shrink-0"
+          >
+            <X className="w-4 h-4 text-muted-foreground" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto flex-1">
+          {isAdmin && order.status !== "cancelado" && (
+            <div className="px-5 py-4 border-b border-border bg-secondary/30">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-foreground">
+                      Nota Fiscal
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {localNfeStatus === "EMITIDA"
+                        ? "Documento autorizado"
+                        : localNfeStatus === "PROCESSANDO"
+                          ? "Aguardando SEFAZ"
+                          : "Emissão via Base ERP"}
+                    </p>
+                  </div>
+                </div>
+
+                {localNfeStatus === "EMITIDA" ? (
+                  <a
+                    href={localNfeUrl || "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition-colors shadow-sm"
+                  >
+                    <CheckCircle className="w-3.5 h-3.5" /> PDF Gerado
+                  </a>
+                ) : localNfeStatus === "PROCESSANDO" ? (
+                  <button
+                    onClick={handleCheckNfeStatus}
+                    disabled={isCheckingNfe}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-yellow-500 text-white rounded-lg text-xs font-bold hover:bg-yellow-600 active:scale-95 transition-all shadow-sm disabled:opacity-50"
+                  >
+                    {isCheckingNfe ? (
+                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    {isCheckingNfe ? "Consultando..." : "Consultar SEFAZ"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handlePrepararEmissao}
+                    disabled={isEmittingNfe}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
+                  >
+                    {isEmittingNfe ? (
+                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      "Emitir NF-e"
+                    )}
+                  </button>
+                )}
+              </div>
+              {localNfeStatus === "ERRO" && (
+                <p className="text-[10px] text-red-500 mt-2 font-medium">
+                  ⚠️ Houve uma falha na última tentativa de emissão. A SEFAZ
+                  pode ter rejeitado.
+                </p>
+              )}
+            </div>
+          )}
+
+          {isAdmin && order.status === "aguardando_pagamento" && (
+            <div className="px-5 py-4 border-b border-border bg-orange-50/40">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600">
+                    <Wallet className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-orange-800">
+                      Pagamento Pendente
+                    </p>
+                    <p className="text-[10px] text-orange-600/80">
+                      Link via Asaas ({order.paymentMethod || "PIX/Boleto"})
+                    </p>
+                  </div>
+                </div>
+
+                {order.paymentUrl ? (
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(order.paymentUrl || "");
+                      alert(
+                        "Link de pagamento copiado! Cole no WhatsApp do cliente.",
+                      );
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 active:scale-95 transition-all shadow-sm"
+                  >
+                    <Copy className="w-3.5 h-3.5" /> Copiar Link (2ª Via)
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-orange-600 italic">
+                    Link não disponível no banco
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="px-5 py-3 border-b border-border">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+              Itens do Pedido
+            </p>
+            <div className="space-y-1.5">
+              {order.items.map((item, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between text-sm"
+                >
+                  <span className="text-foreground">{item.name}</span>
+                  <div className="flex items-center gap-3 text-muted-foreground">
+                    <span className="font-mono text-xs">
+                      {item.qty}x {fmt(item.price)}
+                    </span>
+                    <span className="font-semibold text-foreground">
+                      {fmt(item.qty * item.price)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-between items-center mt-3 pt-2 border-t border-border">
+              <span className="text-sm font-semibold text-foreground">
+                Total do Pedido
+              </span>
+              <span className="text-lg font-black text-[#1e4023]">
+                {fmt(order.total)}
+              </span>
+            </div>
+          </div>
+
+          {(order.deliveryAddress || order.notes) && (
+            <div className="px-5 py-3 border-b border-border space-y-2">
+              {order.deliveryAddress && (
+                <p className="text-xs text-muted-foreground flex items-start gap-1.5">
+                  <MapPin className="w-3 h-3 mt-0.5 flex-shrink-0 text-[#1e4023]" />
+                  {order.deliveryAddress}
+                </p>
+              )}
+              {order.notes && (
+                <p className="text-xs text-muted-foreground flex items-start gap-1.5 italic">
+                  <StickyNote className="w-3 h-3 mt-0.5 flex-shrink-0" />"
+                  {order.notes}"
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="px-5 py-4 border-b border-border">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              Histórico do Ciclo
+            </p>
+            <div className="relative">
+              <div className="absolute left-3 top-2 bottom-2 w-px bg-border" />
+              <div className="space-y-3">
+                {order.history.map((h, i) => {
+                  const hCol = colFor(h.status) || {
+                    bg: "bg-gray-50",
+                    color: "text-gray-700",
+                    border: "border-gray-200",
+                    dot: "bg-gray-500",
+                    label: h.status,
+                  };
+                  return (
+                    <div key={i} className="flex gap-3 items-start">
+                      <div
+                        className={`w-6 h-6 rounded-full ${hCol.dot} flex items-center justify-center flex-shrink-0 z-10 ring-2 ring-card`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-white" />
+                      </div>
+                      <div className="flex-1 min-w-0 pb-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${hCol.bg} ${hCol.color} ${hCol.border}`}
+                          >
+                            {hCol.label}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {h.by}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground/50 ml-auto">
+                            {h.time.split("T")[1]?.substring(0, 5) || ""}
+                          </span>
+                        </div>
+                        {h.note && (
+                          <p className="text-xs text-muted-foreground mt-0.5 italic">
+                            "{h.note}"
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="px-5 py-4">
+            <label className="block text-xs font-medium text-foreground mb-1.5">
+              Adicionar observação
+            </label>
+            <textarea
+              rows={2}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Ex: Confirmado por telefone, entregue no depósito..."
+              className="w-full px-3 py-2 rounded-xl border border-border bg-card text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition resize-none"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 px-5 py-4 border-t border-border bg-secondary/20">
+          {canAdvance && nextCol && !confirmCancel && (
+            <button
+              onClick={() => {
+                onAdvance(order.id, note);
+                onClose();
+              }}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold ${nextCol.bg} ${nextCol.color} border ${nextCol.border} hover:brightness-95 transition-all`}
+            >
+              <ChevronRight className="w-4 h-4" />
+              {isAdmin ? `Mover para: ${nextCol.label}` : "Confirmar Entrega"}
+            </button>
+          )}
+          {canCancel && !confirmCancel && (
+            <button
+              onClick={() => setConfirmCancel(true)}
+              className="px-4 py-2.5 rounded-xl text-sm font-medium text-red-600 bg-red-50 border border-red-200 hover:bg-red-100 transition-colors"
+            >
+              Cancelar
+            </button>
+          )}
+          {confirmCancel && (
+            <div className="flex-1 flex items-center gap-2">
+              <span className="text-xs text-red-600 font-medium flex-1">
+                Confirmar cancelamento?
+              </span>
+              <button
+                onClick={() => {
+                  onCancel(order.id, note);
+                  onClose();
+                }}
+                className="px-3 py-2 rounded-xl bg-red-500 text-white text-xs font-bold hover:bg-red-600 transition-colors"
+              >
+                Confirmar
+              </button>
+              <button
+                onClick={() => setConfirmCancel(false)}
+                className="px-3 py-2 rounded-xl bg-muted text-muted-foreground text-xs hover:bg-secondary transition-colors"
+              >
+                Não
+              </button>
+            </div>
+          )}
+          {!canAdvance && !canCancel && (
+            <div className="flex-1 flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {order.status === "entregue"
+                  ? "Ciclo finalizado com sucesso"
+                  : "Pedido encerrado"}
+              </span>
+              {note && (
+                <button
+                  onClick={() => {
+                    onAddNote(order.id, note);
+                    onClose();
+                  }}
+                  className="px-4 py-2 rounded-xl bg-primary text-primary-foreground text-xs font-semibold hover:bg-[#163318] transition-colors"
+                >
+                  Salvar nota
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+</file>
+
 <file path="src/utils/kanban.ts">
 // Define a ordem lógica do funil de vendas
 export const ORDER_STATUSES = [
@@ -17489,6 +17521,99 @@ export function timeAgo(dateString: string) {
   if (diffMins < 60) return `${diffMins}m atrás`;
   if (diffHrs < 24) return `${diffHrs}h atrás`;
   return `${diffDays}d atrás`;
+}
+</file>
+
+<file path="src/app/api/nfe/consultar/route.ts">
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const ERP_URL = (process.env.BASE_ERP_API_URL || "https://api-sandbox.baseerp.com.br").replace(/\/$/, "");
+const ERP_KEY = process.env.BASE_ERP_API_KEY!;
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json().catch(() => null);
+    const orderId = body?.orderId;
+
+    if (!orderId) {
+      return NextResponse.json({ success: false, error: "ID do pedido não fornecido." }, { status: 400 });
+    }
+
+    // 1. Busca o base_erp_order_id no Supabase
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('base_erp_order_id')
+      .eq('id', orderId)
+      .single();
+
+    if (orderErr || !order?.base_erp_order_id) {
+      return NextResponse.json({ 
+        success: false, 
+        error: "Este pedido não possui ID do ERP associado." 
+      }, { status: 400 });
+    }
+
+    const baseErpOrderId = order.base_erp_order_id;
+
+    // 2. Conforme a documentação oficial (Recuperar um único pedido via GET)
+    const targetUrl = `${ERP_URL}/api/v1/salesOrders/${baseErpOrderId}`;
+    console.log(`🔍 [API Consultar] A consultar pedido no ERP: ${targetUrl}`);
+
+    const response = await fetch(targetUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'access_token': ERP_KEY
+      }
+    });
+
+    const responseData = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      return NextResponse.json({ 
+        success: false, 
+        error: `Erro no ERP (${response.status}): ${responseData?.message || JSON.stringify(responseData)}` 
+      }, { status: 500 });
+    }
+
+    // 3. Extrai o status da NF-e e o PDF de dentro do objeto do pedido retornado pelo ERP
+    // (Ajuste as propriedades abaixo conforme o JSON exato que o Base ERP devolve no GET /salesOrders/{id})
+    const nfeInfo = responseData?.invoice || responseData?.nfe || responseData;
+    const statusAtual = nfeInfo?.invoiceStatus || nfeInfo?.status || nfeInfo?.nfeStatus || 'PROCESSANDO';
+    const pdfUrl = nfeInfo?.pdfUrl || nfeInfo?.invoicePdfUrl || nfeInfo?.publicUrl || "";
+
+    let novoStatus = 'PROCESSANDO';
+    if (['EMITIDA', 'AUTHORIZED', 'APPROVED', 'AUTORIZADA'].includes(statusAtual.toUpperCase())) {
+        novoStatus = 'EMITIDA';
+    } else if (['ERRO', 'DENIED', 'REJECTED', 'REJEITADA'].includes(statusAtual.toUpperCase())) {
+        novoStatus = 'ERRO';
+    }
+
+    // 4. Atualiza no Supabase
+    await supabase
+      .from('orders')
+      .update({ 
+        nfe_status: novoStatus,
+        nfe_url: pdfUrl 
+      })
+      .eq('id', orderId);
+
+    return NextResponse.json({ 
+      success: true, 
+      status: novoStatus, 
+      url: pdfUrl 
+    });
+
+  } catch (error: any) {
+    console.error("❌ Erro interno ao consultar NFe:", error);
+    return NextResponse.json({ success: false, error: error.message || "Erro interno no servidor" }, { status: 500 });
+  }
 }
 </file>
 
