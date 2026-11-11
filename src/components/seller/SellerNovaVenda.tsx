@@ -1,4 +1,5 @@
 "use client";
+
 import { useState, useEffect } from "react";
 import {
   Search,
@@ -16,10 +17,12 @@ import {
   Copy,
   ExternalLink,
   UserPlus,
+  Printer,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { ClientModal } from "@/components/ui/ClientModal";
 import { fmt } from "@/utils/format";
+import { masks } from "@/utils/validators";
 import type { Client, Product, OrderItem } from "@/types";
 import { supabase } from "@/utils/supabase";
 import { useApp } from "@/contexts/AppContext";
@@ -39,9 +42,10 @@ export function SellerNovaVenda() {
 
   const [productSearch, setProductSearch] = useState("");
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
+  const [boletoFee, setBoletoFee] = useState("0,00");
   const [confirmed, setConfirmed] = useState(false);
 
-  // Estados de Pagamento e Configurações (Vencimento e Parcelas)
+  // Estados de Pagamento e Configurações (Vencimento, Parcelas e Taxa de Impressão)
   const [billingType, setBillingType] = useState<
     "PIX" | "BOLETO" | "CREDIT_CARD"
   >("PIX");
@@ -77,7 +81,6 @@ export function SellerNovaVenda() {
     setLoadingData(false);
   }
 
-  // Função exclusiva para recarregar apenas os clientes após criar um novo
   async function refreshClients() {
     const { data } = await supabase
       .from("clients")
@@ -92,7 +95,6 @@ export function SellerNovaVenda() {
       c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
       (c.doc && c.doc.includes(clientSearch)),
   );
-
   const filteredProducts = dbProducts.filter((p) =>
     p.name.toLowerCase().includes(productSearch.toLowerCase()),
   );
@@ -100,7 +102,13 @@ export function SellerNovaVenda() {
     p.name.toLowerCase().includes(catalogSearch.toLowerCase()),
   );
 
-  const total = orderItems.reduce((a, i) => a + i.qty * i.price, 0);
+  const subtotal = orderItems.reduce((a, i) => a + i.qty * i.price, 0);
+
+  const parsedBoletoFee =
+    parseFloat((boletoFee || "0").replace(/\./g, "").replace(",", ".")) || 0;
+  const activeBoletoFee = billingType === "BOLETO" ? parsedBoletoFee : 0;
+
+  const total = subtotal + activeBoletoFee;
 
   function addProduct(p: Product) {
     setOrderItems((prev) => {
@@ -140,7 +148,6 @@ export function SellerNovaVenda() {
   async function handleConfirmOrder() {
     if (!selectedClient || !session?.sellerId || orderItems.length === 0)
       return;
-
     setIsSubmitting(true);
 
     try {
@@ -157,6 +164,11 @@ export function SellerNovaVenda() {
       }
       const orderNumber = `#${nextNum.toString().padStart(4, "0")}`;
 
+      const feeNote =
+        activeBoletoFee > 0
+          ? `Taxa de impressão de boleto incluída: ${fmt(activeBoletoFee)}`
+          : null;
+
       const { data: order, error: orderError } = await supabase
         .from("orders")
         .insert({
@@ -168,26 +180,33 @@ export function SellerNovaVenda() {
           payment_status: "PENDING",
           payment_method: billingType,
           delivery_address: selectedClient.city,
+          notes: feeNote,
         })
         .select()
         .single();
 
       if (orderError) throw orderError;
 
+      const priceFactor = subtotal > 0 ? total / subtotal : 1;
       const itemsToInsert = orderItems.map((item) => ({
         order_id: order.id,
         product_id: item.productId,
         qty: item.qty,
-        price: item.price,
+        price: item.price * priceFactor,
       }));
 
       await supabase.from("order_items").insert(itemsToInsert);
 
+      const feeHistoryText =
+        activeBoletoFee > 0
+          ? ` | Taxa de Impressão: ${fmt(activeBoletoFee)}`
+          : "";
+
       await supabase.from("order_history").insert({
         order_id: order.id,
         status: "novo",
-        changed_by: "App Vendedor",
-        note: `Pedido criado em campo. Método: ${billingType} (${installments}x)`,
+        changed_by: session.name || "App Vendedor",
+        note: `Pedido criado em campo. Método: ${billingType} (${installments}x)${feeHistoryText}. Total: ${fmt(total)}`,
       });
 
       const checkoutRes = await fetch("/api/checkout", {
@@ -204,12 +223,12 @@ export function SellerNovaVenda() {
       });
 
       const checkoutData = await checkoutRes.json();
+
       if (!checkoutRes.ok)
         throw new Error(
           checkoutData.error || "Erro ao gerar cobrança no Asaas",
         );
 
-      // --- INÍCIO DOS GATILHOS DE NOTIFICAÇÃO PUSH ---
       try {
         const baseUrl =
           process.env.NEXT_PUBLIC_BASE_URL ||
@@ -217,7 +236,6 @@ export function SellerNovaVenda() {
             ? `https://${process.env.VERCEL_URL}`
             : "http://localhost:3000");
 
-        // 1. Notificação Padrão de Nova Venda
         await fetch(`${baseUrl}/api/push/send`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -229,8 +247,6 @@ export function SellerNovaVenda() {
           }),
         });
 
-        // 2. Inteligência de Estoque Crítico
-        // Verifica se a quantidade vendida deixou algum produto no limite
         const produtosCriticos = orderItems.filter((item) => {
           const produtoNoBanco = dbProducts.find(
             (p) => p.id === item.productId,
@@ -244,17 +260,16 @@ export function SellerNovaVenda() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              targetUserId: "admin", // Alerta a central de compras/gestão
-              title: "Alerta de Estoque Critico",
-              body: `A ultima venda reduziu o estoque a niveis de risco: ${nomesCriticos}. Verifique a necessidade de reposicao.`,
+              targetUserId: "admin",
+              title: "Alerta de Estoque Crítico",
+              body: `A última venda reduziu o estoque a níveis de risco: ${nomesCriticos}. Verifique a necessidade de reposição.`,
               url: "/admin/produtos",
             }),
           });
         }
       } catch (pushErr) {
-        console.error("Falha ao enviar notificacao push:", pushErr);
+        console.error("Falha ao enviar notificação push:", pushErr);
       }
-      // --- FIM DOS GATILHOS ---
 
       setPaymentResult(checkoutData);
       setConfirmed(true);
@@ -309,7 +324,9 @@ export function SellerNovaVenda() {
         ) : paymentResult?.invoiceUrl ? (
           <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-6 shadow-sm flex flex-col items-center mt-2">
             <p className="text-sm text-muted-foreground mb-4">
-              A cobrança foi gerada com sucesso. Envie o link para o cliente.
+              A cobrança foi gerada com sucesso (Total:{" "}
+              <strong className="text-foreground">{fmt(total)}</strong>). Envie
+              o link para o cliente.
             </p>
             <a
               href={paymentResult.invoiceUrl}
@@ -317,7 +334,7 @@ export function SellerNovaVenda() {
               rel="noreferrer"
               className="w-full py-3 rounded-xl bg-[#1e4023] text-white font-bold flex items-center justify-center gap-2 hover:bg-[#163318] transition-colors"
             >
-              <ExternalLink className="w-4 h-4" /> Acessar Fatura
+              <ExternalLink className="w-4 h-4" /> Acessar Fatura / Boleto
             </a>
           </div>
         ) : (
@@ -331,6 +348,7 @@ export function SellerNovaVenda() {
             setConfirmed(false);
             setSelectedClient(null);
             setOrderItems([]);
+            setBoletoFee("0,00");
             setPaymentResult(null);
             setInstallments(1);
           }}
@@ -350,7 +368,6 @@ export function SellerNovaVenda() {
 
   return (
     <>
-      {/* MODAL DE CADASTRO DE CLIENTE REAPROVEITADO */}
       {isClientModalOpen && (
         <ClientModal
           onClose={() => setIsClientModalOpen(false)}
@@ -421,6 +438,7 @@ export function SellerNovaVenda() {
                         {p.stock} {p.unit}
                       </span>
                     </div>
+
                     <div className="p-3 flex-1 flex flex-col">
                       <p className="text-xs font-bold text-foreground line-clamp-2 leading-tight mb-1">
                         {p.name}
@@ -433,6 +451,7 @@ export function SellerNovaVenda() {
                           {fmt(p.price)}
                         </span>
                       </div>
+
                       <div className="mt-3">
                         {qtyInCart > 0 ? (
                           <div className="flex items-center justify-between bg-primary/10 rounded-lg p-1">
@@ -678,21 +697,33 @@ export function SellerNovaVenda() {
             <div className="grid grid-cols-3 gap-2">
               <button
                 onClick={() => setBillingType("PIX")}
-                className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border transition-all ${billingType === "PIX" ? "bg-primary/10 border-primary text-primary" : "bg-card border-border text-muted-foreground hover:bg-secondary"}`}
+                className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border transition-all ${
+                  billingType === "PIX"
+                    ? "bg-primary/10 border-primary text-primary"
+                    : "bg-card border-border text-muted-foreground hover:bg-secondary"
+                }`}
               >
                 <QrCode className="w-5 h-5" />
                 <span className="text-xs font-semibold">PIX</span>
               </button>
               <button
                 onClick={() => setBillingType("BOLETO")}
-                className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border transition-all ${billingType === "BOLETO" ? "bg-primary/10 border-primary text-primary" : "bg-card border-border text-muted-foreground hover:bg-secondary"}`}
+                className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border transition-all ${
+                  billingType === "BOLETO"
+                    ? "bg-primary/10 border-primary text-primary"
+                    : "bg-card border-border text-muted-foreground hover:bg-secondary"
+                }`}
               >
                 <Barcode className="w-5 h-5" />
                 <span className="text-xs font-semibold">Boleto</span>
               </button>
               <button
                 onClick={() => setBillingType("CREDIT_CARD")}
-                className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border transition-all ${billingType === "CREDIT_CARD" ? "bg-primary/10 border-primary text-primary" : "bg-card border-border text-muted-foreground hover:bg-secondary"}`}
+                className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border transition-all ${
+                  billingType === "CREDIT_CARD"
+                    ? "bg-primary/10 border-primary text-primary"
+                    : "bg-card border-border text-muted-foreground hover:bg-secondary"
+                }`}
               >
                 <LinkIcon className="w-5 h-5" />
                 <span className="text-xs font-semibold text-center leading-tight">
@@ -734,12 +765,42 @@ export function SellerNovaVenda() {
                   </select>
                 </div>
               )}
+
+              {billingType === "BOLETO" && (
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-foreground mb-1.5 flex items-center gap-1">
+                    <Printer className="w-3.5 h-3.5 text-primary" />
+                    Taxa de Impressão do Boleto (R$)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-muted-foreground">
+                      R$
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={boletoFee}
+                      onChange={(e) =>
+                        setBoletoFee(masks.currency(e.target.value) || "0,00")
+                      }
+                      placeholder="0,00"
+                      className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-border bg-card text-sm font-mono font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
 
         {/* Footer Fixo */}
         <div className="fixed bottom-[70px] left-0 right-0 p-4 bg-card border-t border-border shadow-[0_-10px_20px_rgba(0,0,0,0.05)] z-30 pb-safe">
+          {activeBoletoFee > 0 && (
+            <div className="flex items-center justify-between text-xs text-amber-700 font-medium mb-1">
+              <span>Subtotal: {fmt(subtotal)}</span>
+              <span>+ Taxa de Impressão: {fmt(activeBoletoFee)}</span>
+            </div>
+          )}
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-semibold text-muted-foreground">
               Total da Venda

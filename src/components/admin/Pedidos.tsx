@@ -13,9 +13,11 @@ import {
   Link as LinkIcon,
   Copy,
   ExternalLink,
+  Printer,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { fmt } from "@/utils/format";
+import { masks } from "@/utils/validators";
 import type { Client, Product, OrderItem, Seller } from "@/types";
 import { supabase } from "@/utils/supabase";
 import { useApp } from "@/contexts/AppContext";
@@ -31,15 +33,16 @@ export function Pedidos() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
-  // "" = Venda Direta pelo Gestor logado | number = ID do Vendedor
   const [selectedSellerId, setSelectedSellerId] = useState<number | "">("");
   const [clientSearch, setClientSearch] = useState("");
   const [showClientDrop, setShowClientDrop] = useState(false);
   const [productSearch, setProductSearch] = useState("");
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [discount, setDiscount] = useState("0");
+  const [boletoFee, setBoletoFee] = useState("0,00");
   const [confirmed, setConfirmed] = useState(false);
 
+  // Estados de Pagamento (Integração Asaas)
   const [billingType, setBillingType] = useState<
     "PIX" | "BOLETO" | "CREDIT_CARD"
   >("PIX");
@@ -83,7 +86,13 @@ export function Pedidos() {
     0,
   );
   const discountVal = (subtotal * parseFloat(discount || "0")) / 100;
-  const total = subtotal - discountVal;
+
+  // Converte a taxa de impressão (somente ativa quando BOLETO está selecionado)
+  const parsedBoletoFee =
+    parseFloat((boletoFee || "0").replace(/\./g, "").replace(",", ".")) || 0;
+  const activeBoletoFee = billingType === "BOLETO" ? parsedBoletoFee : 0;
+
+  const total = Math.max(0, subtotal - discountVal + activeBoletoFee);
 
   function addProduct(p: Product) {
     setOrderItems((prev) => {
@@ -146,6 +155,11 @@ export function Pedidos() {
         .filter(Boolean)
         .join(", ");
 
+      const feeNote =
+        activeBoletoFee > 0
+          ? `Taxa de impressão de boleto incluída: ${fmt(activeBoletoFee)}`
+          : null;
+
       const { data: order, error: orderError } = await supabase
         .from("orders")
         .insert({
@@ -157,18 +171,20 @@ export function Pedidos() {
           payment_status: "PENDING",
           payment_method: billingType,
           delivery_address: fullDeliveryAddress || selectedClient.city,
+          notes: feeNote,
         })
         .select()
         .single();
 
       if (orderError) throw orderError;
 
-      const discountPercent = parseFloat(discount || "0") / 100;
+      // Fator proporcional que incorpora tanto o desconto quanto a taxa de impressão nos itens
+      const priceFactor = subtotal > 0 ? total / subtotal : 1;
       const itemsToInsert = orderItems.map((item) => ({
         order_id: order.id,
         product_id: item.productId,
         qty: Number(item.qty) || 1,
-        price: item.price * (1 - discountPercent),
+        price: item.price * priceFactor,
       }));
 
       await supabase.from("order_items").insert(itemsToInsert);
@@ -178,11 +194,16 @@ export function Pedidos() {
           ? `Venda direta realizada por ${gestorName}.`
           : `Pedido lançado por ${gestorName} para vendedor.`;
 
+      const feeHistoryText =
+        activeBoletoFee > 0
+          ? ` | Taxa de Impressão: ${fmt(activeBoletoFee)}`
+          : "";
+
       await supabase.from("order_history").insert({
         order_id: order.id,
         status: "aguardando_pagamento",
         changed_by: gestorName,
-        note: `${saleOriginNote} Método: ${billingType} (${installments}x). Total: ${fmt(total)}`,
+        note: `${saleOriginNote} Método: ${billingType} (${installments}x)${feeHistoryText}. Total: ${fmt(total)}`,
       });
 
       const checkoutRes = await fetch("/api/checkout", {
@@ -255,8 +276,9 @@ export function Pedidos() {
         ) : paymentResult?.invoiceUrl ? (
           <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-6 shadow-sm flex flex-col items-center mt-2">
             <p className="text-sm text-muted-foreground mb-4">
-              A cobrança foi gerada com sucesso. Copie ou acesse o link para
-              enviar ao cliente.
+              A cobrança foi gerada com sucesso (Total:{" "}
+              <strong className="text-foreground">{fmt(total)}</strong>). Copie
+              ou acesse o link para enviar ao cliente.
             </p>
             <a
               href={paymentResult.invoiceUrl}
@@ -264,7 +286,7 @@ export function Pedidos() {
               rel="noreferrer"
               className="w-full py-3 rounded-xl bg-[#1e4023] text-white font-bold flex items-center justify-center gap-2 hover:bg-[#163318] transition-colors"
             >
-              <ExternalLink className="w-4 h-4" /> Acessar Fatura
+              <ExternalLink className="w-4 h-4" /> Acessar Fatura / Boleto
             </a>
           </div>
         ) : (
@@ -282,6 +304,7 @@ export function Pedidos() {
             setOrderItems([]);
             setClientSearch("");
             setDiscount("0");
+            setBoletoFee("0,00");
             setSelectedSellerId("");
             setPaymentResult(null);
             setInstallments(1);
@@ -580,7 +603,16 @@ export function Pedidos() {
                     </span>
                   </button>
                 </div>
-                <div className="grid grid-cols-2 gap-4 mt-4 bg-secondary/30 p-4 rounded-xl border border-border">
+
+                <div
+                  className={`grid grid-cols-1 ${
+                    billingType === "BOLETO"
+                      ? "sm:grid-cols-3"
+                      : billingType === "CREDIT_CARD"
+                        ? "sm:grid-cols-2"
+                        : "sm:grid-cols-1"
+                  } gap-4 mt-4 bg-secondary/30 p-4 rounded-xl border border-border`}
+                >
                   <div>
                     <label className="block text-xs font-medium text-foreground mb-1.5">
                       Vencimento Inicial
@@ -592,6 +624,7 @@ export function Pedidos() {
                       className="w-full px-3 py-2.5 rounded-lg border border-border bg-card text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                     />
                   </div>
+
                   {(billingType === "CREDIT_CARD" ||
                     billingType === "BOLETO") && (
                     <div>
@@ -613,6 +646,32 @@ export function Pedidos() {
                           </option>
                         ))}
                       </select>
+                    </div>
+                  )}
+
+                  {billingType === "BOLETO" && (
+                    <div>
+                      <label className="block text-xs font-medium text-foreground mb-1.5 flex items-center gap-1">
+                        <Printer className="w-3.5 h-3.5 text-primary" />
+                        Taxa de Impressão (R$)
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-muted-foreground">
+                          R$
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={boletoFee}
+                          onChange={(e) =>
+                            setBoletoFee(
+                              masks.currency(e.target.value) || "0,00",
+                            )
+                          }
+                          placeholder="0,00"
+                          className="w-full pl-8 pr-3 py-2.5 rounded-lg border border-border bg-card text-sm font-mono font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -668,6 +727,12 @@ export function Pedidos() {
                   <div className="flex justify-between text-red-500 text-xs">
                     <span>Desconto aplicado</span>
                     <span>- {fmt(discountVal)}</span>
+                  </div>
+                )}
+                {activeBoletoFee > 0 && (
+                  <div className="flex justify-between text-amber-700 text-xs font-medium">
+                    <span>Taxa de Impressão (Boleto)</span>
+                    <span>+ {fmt(activeBoletoFee)}</span>
                   </div>
                 )}
                 <div className="border-t border-border pt-3 flex justify-between items-center">
