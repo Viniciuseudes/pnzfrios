@@ -54,6 +54,19 @@ export function OrderDetailModal({
   const [localNfeStatus, setLocalNfeStatus] = useState(order.nfeStatus);
   const [localNfeUrl, setLocalNfeUrl] = useState(order.nfeUrl);
 
+  // Busca no histórico se já houve algum erro detalhado gravado anteriormente
+  const lastSavedNfeError =
+    [...(order.history || [])]
+      .reverse()
+      .find(
+        (h) =>
+          h.note?.includes("Erro ao emitir NF-e:") ||
+          h.note?.includes("Rejeição"),
+      )?.note || "";
+
+  const [nfeErrorDetail, setNfeErrorDetail] =
+    useState<string>(lastSavedNfeError);
+
   const [isNcmModalOpen, setIsNcmModalOpen] = useState(false);
   const [itemsMissingNcm, setItemsMissingNcm] = useState<any[]>([]);
   const [ncmValues, setNcmValues] = useState<Record<string, string>>({});
@@ -81,6 +94,7 @@ export function OrderDetailModal({
     )
       return;
 
+    setNfeErrorDetail("");
     setIsEmittingNfe(true);
     try {
       const { data: orderDetails, error } = await supabase
@@ -112,7 +126,7 @@ export function OrderDetailModal({
       await processNfeEmission();
     } catch (err: any) {
       console.error("Erro ao verificar itens do pedido:", err);
-      alert("Erro ao validar os produtos. Verifique sua conexão.");
+      setNfeErrorDetail(err.message || "Erro ao validar os produtos.");
       setIsEmittingNfe(false);
     }
   }
@@ -160,31 +174,20 @@ export function OrderDetailModal({
       });
 
       const data = await res.json();
-      if (!res.ok)
+      if (!res.ok || !data.success) {
         throw new Error(data.error || "Erro desconhecido ao emitir NF-e");
+      }
 
       const novoStatus = data.status === "EMITIDA" ? "EMITIDA" : "PROCESSANDO";
       const novaUrl = data.nfe_url || "";
 
-      await supabase
-        .from("orders")
-        .update({
-          nfe_status: novoStatus,
-          nfe_url: novaUrl,
-          nfe_number: data.nfe_number?.toString(),
-        })
-        .eq("id", order.id);
-
       setLocalNfeStatus(novoStatus);
       setLocalNfeUrl(novaUrl);
+      setNfeErrorDetail("");
     } catch (err: any) {
       console.error("Erro NFe:", err);
       setLocalNfeStatus("ERRO");
-      await supabase
-        .from("orders")
-        .update({ nfe_status: "ERRO" })
-        .eq("id", order.id);
-      alert(`Falha na emissão da NF-e: ${err.message}`);
+      setNfeErrorDetail(err.message);
     } finally {
       setIsEmittingNfe(false);
     }
@@ -208,18 +211,22 @@ export function OrderDetailModal({
       if (data.url) setLocalNfeUrl(data.url);
 
       if (data.status === "EMITIDA") {
+        setNfeErrorDetail("");
         alert("Nota Fiscal autorizada com sucesso!");
         window.location.reload();
       } else if (data.status === "ERRO") {
-        alert(
-          "A SEFAZ rejeitou a nota. Verifique o painel do ERP para corrigir.",
-        );
+        const msg =
+          data.reason ||
+          `Status retornado pelo ERP: ${data.rawErpStatus}. Verifique no painel do Base ERP se o Certificado Digital A1 e os impostos estão ativos.`;
+        setNfeErrorDetail(msg);
       } else {
-        alert("A nota ainda está em processamento na SEFAZ.");
+        alert(
+          `A nota ainda está em processamento na SEFAZ (Status ERP: ${data.rawErpStatus || "PROCESSANDO"}).`,
+        );
       }
     } catch (err: any) {
       console.error("Erro detalhado na consulta:", err);
-      alert(`Falha ao consultar SEFAZ: ${err.message}`);
+      setNfeErrorDetail(`Falha ao consultar SEFAZ: ${err.message}`);
     } finally {
       setIsCheckingNfe(false);
     }
@@ -357,66 +364,93 @@ export function OrderDetailModal({
         <div className="overflow-y-auto flex-1">
           {isAdmin && order.status !== "cancelado" && (
             <div className="px-5 py-4 border-b border-border bg-secondary/30">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
                     <FileText className="w-4 h-4" />
                   </div>
                   <div>
                     <p className="text-xs font-bold text-foreground">
-                      Nota Fiscal
+                      Nota Fiscal Eletrônica
                     </p>
                     <p className="text-[10px] text-muted-foreground">
                       {localNfeStatus === "EMITIDA"
-                        ? "Documento autorizado"
+                        ? "Documento autorizado pela SEFAZ"
                         : localNfeStatus === "PROCESSANDO"
-                          ? "Aguardando SEFAZ"
-                          : "Emissão via Base ERP"}
+                          ? "Aguardando retorno da SEFAZ"
+                          : localNfeStatus === "ERRO"
+                            ? "Falha / Rejeição identificada"
+                            : "Emissão via Base ERP"}
                     </p>
                   </div>
                 </div>
 
-                {localNfeStatus === "EMITIDA" ? (
-                  <a
-                    href={localNfeUrl || "#"}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition-colors shadow-sm"
-                  >
-                    <CheckCircle className="w-3.5 h-3.5" /> PDF Gerado
-                  </a>
-                ) : localNfeStatus === "PROCESSANDO" ? (
-                  <button
-                    onClick={handleCheckNfeStatus}
-                    disabled={isCheckingNfe}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-yellow-500 text-white rounded-lg text-xs font-bold hover:bg-yellow-600 active:scale-95 transition-all shadow-sm disabled:opacity-50"
-                  >
-                    {isCheckingNfe ? (
-                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    )}
-                    {isCheckingNfe ? "Consultando..." : "Consultar SEFAZ"}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handlePrepararEmissao}
-                    disabled={isEmittingNfe}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
-                  >
-                    {isEmittingNfe ? (
-                      <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      "Emitir NF-e"
-                    )}
-                  </button>
-                )}
+                <div className="flex items-center gap-1.5">
+                  {localNfeStatus === "EMITIDA" ? (
+                    <a
+                      href={localNfeUrl || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition-colors shadow-sm"
+                    >
+                      <CheckCircle className="w-3.5 h-3.5" /> Abrir DANFE (PDF)
+                    </a>
+                  ) : localNfeStatus === "PROCESSANDO" ? (
+                    <button
+                      onClick={handleCheckNfeStatus}
+                      disabled={isCheckingNfe}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-yellow-500 text-white rounded-lg text-xs font-bold hover:bg-yellow-600 active:scale-95 transition-all shadow-sm disabled:opacity-50"
+                    >
+                      {isCheckingNfe ? (
+                        <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      )}
+                      {isCheckingNfe ? "Consultando..." : "Consultar SEFAZ"}
+                    </button>
+                  ) : (
+                    <>
+                      {localNfeStatus === "ERRO" && (
+                        <button
+                          onClick={handleCheckNfeStatus}
+                          disabled={isCheckingNfe}
+                          title="Consultar motivo detalhado no ERP"
+                          className="flex items-center gap-1 px-2.5 py-2 bg-secondary border border-border text-foreground rounded-lg text-xs font-semibold hover:bg-muted transition-all disabled:opacity-50"
+                        >
+                          <RefreshCw
+                            className={`w-3.5 h-3.5 ${isCheckingNfe ? "animate-spin" : ""}`}
+                          />
+                        </button>
+                      )}
+                      <button
+                        onClick={handlePrepararEmissao}
+                        disabled={isEmittingNfe}
+                        className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50 shadow-sm"
+                      >
+                        {isEmittingNfe ? (
+                          <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                        ) : localNfeStatus === "ERRO" ? (
+                          "Tentar Reemitir NF-e"
+                        ) : (
+                          "Emitir NF-e"
+                        )}
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
+
               {localNfeStatus === "ERRO" && (
-                <p className="text-[10px] text-red-500 mt-2 font-medium">
-                  Houve uma falha na última tentativa de emissão. A SEFAZ pode
-                  ter rejeitado.
-                </p>
+                <div className="mt-3 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs space-y-1">
+                  <p className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 text-red-600" />
+                    Diagnóstico da Falha:
+                  </p>
+                  <p className="text-[11px] leading-relaxed break-words font-mono bg-white/70 p-2 rounded border border-red-100">
+                    {nfeErrorDetail ||
+                      "Clique no ícone de atualizar ao lado de 'Tentar Reemitir NF-e' ou em 'Tentar Reemitir NF-e' para capturar o erro detalhado do Base ERP."}
+                  </p>
+                </div>
               )}
             </div>
           )}
