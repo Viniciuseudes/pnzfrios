@@ -1,4 +1,5 @@
 "use client";
+
 import { useState, useEffect } from "react";
 import {
   Search,
@@ -7,6 +8,7 @@ import {
   MapPin,
   Eye,
   Edit2,
+  Trash2,
   Users,
   Clock,
   AlertTriangle,
@@ -17,7 +19,9 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { ClientModal } from "@/components/ui/ClientModal";
 import { ClientViewModal } from "@/components/ui/ClientViewModal";
+import { DeleteConfirmModal } from "@/components/ui/DeleteConfirmModal";
 import { supabase } from "@/utils/supabase";
+import { useApp } from "@/contexts/AppContext";
 import type { Client } from "@/types";
 
 type RecencyStatus = "active" | "warning" | "danger" | "never";
@@ -29,6 +33,8 @@ interface ClientWithRecency extends Client {
 }
 
 export function Clientes() {
+  const { session } = useApp();
+
   const [dbClients, setDbClients] = useState<ClientWithRecency[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -40,11 +46,11 @@ export function Clientes() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [viewingClient, setViewingClient] = useState<Client | null>(null);
+  const [deletingClient, setDeletingClient] = useState<Client | null>(null);
 
   async function fetchClients() {
     setLoading(true);
     try {
-      // 1. Busca todos os clientes e as datas dos seus pedidos válidos
       const { data, error } = await supabase
         .from("clients")
         .select(
@@ -62,7 +68,6 @@ export function Clientes() {
 
       const now = new Date().getTime();
 
-      // 2. Calcula a Recência em dias
       const enrichedClients: ClientWithRecency[] = (data || []).map(
         (c: any) => {
           const validOrders = (c.orders || []).filter(
@@ -78,7 +83,6 @@ export function Clientes() {
             };
           }
 
-          // Ordena para pegar a data do pedido mais recente
           const sortedDates = validOrders
             .map((o: any) => new Date(o.created_at).getTime())
             .sort((a: number, b: number) => b - a);
@@ -116,6 +120,28 @@ export function Clientes() {
     fetchClients();
   }, []);
 
+  async function handleDeleteClient(password: string) {
+    if (!deletingClient) return;
+
+    const response = await fetch("/api/clientes", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientId: deletingClient.id,
+        password,
+        adminEmail: session?.email,
+        adminName: session?.name,
+      }),
+    });
+
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || "Não foi possível excluir o cliente.");
+    }
+
+    await fetchClients();
+  }
+
   const filtered = dbClients.filter((c) => {
     const matchSearch =
       c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -123,7 +149,6 @@ export function Clientes() {
       (c.city && c.city.toLowerCase().includes(search.toLowerCase()));
 
     const matchFilter = filter === "Todos" || c.status === filter;
-
     const matchRecency =
       recencyFilter === "all" || c.recencyStatus === recencyFilter;
 
@@ -139,7 +164,6 @@ export function Clientes() {
 
   return (
     <>
-      {/* Modal de Criação / Edição */}
       {(isCreateModalOpen || editingClient) && (
         <ClientModal
           clientToEdit={editingClient}
@@ -151,11 +175,20 @@ export function Clientes() {
         />
       )}
 
-      {/* Modal de Visão 360º */}
       {viewingClient && (
         <ClientViewModal
           client={viewingClient}
           onClose={() => setViewingClient(null)}
+        />
+      )}
+
+      {deletingClient && (
+        <DeleteConfirmModal
+          title="Excluir Cliente"
+          itemName={deletingClient.name}
+          warningText="O cadastro será removido da carteira ativa, preservando apenas o histórico financeiro de pedidos já emitidos."
+          onClose={() => setDeletingClient(null)}
+          onConfirm={handleDeleteClient}
         />
       )}
 
@@ -267,10 +300,9 @@ export function Clientes() {
                   onClick={() => setRecencyFilter("all")}
                   className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-secondary text-foreground hover:bg-muted transition"
                 >
-                  Limpar filtro de risco ✕
+                  Limpar filtro de risco
                 </button>
               )}
-
               <div className="flex rounded-lg border border-border overflow-hidden">
                 {(["Todos", "Ativo", "Inativo"] as const).map((f) => (
                   <button
@@ -352,7 +384,6 @@ export function Clientes() {
                           {c.city || "-"}
                         </td>
 
-                        {/* COLUNA DE RECÊNCIA INTELIGENTE */}
                         <td className="py-3.5 px-4">
                           {c.recencyStatus === "never" ? (
                             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/50 px-2.5 py-1 rounded-full">
@@ -383,10 +414,10 @@ export function Clientes() {
                           <Badge status={c.status as any} />
                         </td>
                         <td className="py-3.5 px-4 text-right">
-                          <div className="flex items-center justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center justify-end gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
                             <button
                               onClick={() => setViewingClient(c)}
-                              title="Visão 360 do Cliente"
+                              title="Visão 360º do Cliente"
                               className="p-2 rounded-lg hover:bg-primary/10 hover:text-primary transition-colors"
                             >
                               <Eye className="w-4 h-4" />
@@ -397,6 +428,13 @@ export function Clientes() {
                               className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground"
                             >
                               <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => setDeletingClient(c)}
+                              title="Excluir Cliente"
+                              className="p-2 rounded-lg hover:bg-red-50 hover:text-red-600 transition-colors text-muted-foreground"
+                            >
+                              <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
                         </td>
@@ -428,7 +466,6 @@ export function Clientes() {
                       <Badge status={c.status as any} />
                     </div>
 
-                    {/* ALERTA DE RECÊNCIA NO CARD MOBILE */}
                     <div className="pt-1">
                       {c.recencyStatus === "danger" ? (
                         <div className="flex items-center gap-2 p-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-bold">
@@ -461,15 +498,22 @@ export function Clientes() {
                     <div className="flex gap-2 mt-2">
                       <button
                         onClick={() => setViewingClient(c)}
-                        className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg bg-primary/10 text-primary text-xs font-bold hover:bg-primary/20 transition-colors"
+                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-primary/10 text-primary text-xs font-bold hover:bg-primary/20 transition-colors"
                       >
                         <Eye className="w-3.5 h-3.5" /> Histórico
                       </button>
                       <button
                         onClick={() => setEditingClient(c)}
-                        className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg border border-border bg-card text-foreground text-xs font-bold hover:bg-secondary transition-colors"
+                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border border-border bg-card text-foreground text-xs font-bold hover:bg-secondary transition-colors"
                       >
                         <Edit2 className="w-3.5 h-3.5" /> Editar
+                      </button>
+                      <button
+                        onClick={() => setDeletingClient(c)}
+                        title="Excluir Cliente"
+                        className="px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100 transition-colors flex items-center justify-center"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>

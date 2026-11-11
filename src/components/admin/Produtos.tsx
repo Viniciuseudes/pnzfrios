@@ -1,10 +1,12 @@
 "use client";
+
 import { useState, useEffect, useMemo } from "react";
 import {
   Search,
   Plus,
   Download,
   Edit2,
+  Trash2,
   AlertTriangle,
   PackageOpen,
   Calendar,
@@ -13,15 +15,18 @@ import {
 } from "lucide-react";
 import { StockBadge } from "@/components/ui/Badge";
 import { ProductModal } from "@/components/ui/ProductModal";
+import { DeleteConfirmModal } from "@/components/ui/DeleteConfirmModal";
 import { supabase } from "@/utils/supabase";
+import { useApp } from "@/contexts/AppContext";
 import type { Product } from "@/types";
 import { fmt } from "@/utils/format";
 
 export function Produtos() {
+  const { session } = useApp();
+
   const [dbProducts, setDbProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Estados dos Filtros
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("Todos");
   const [stockFilter, setStockFilter] = useState<"Todos" | "Critico" | "OK">(
@@ -29,9 +34,9 @@ export function Produtos() {
   );
   const [expiryDaysFilter, setExpiryDaysFilter] = useState<string>("Todos");
 
-  // Estados do Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
 
   async function fetchProducts() {
     setLoading(true);
@@ -47,6 +52,28 @@ export function Produtos() {
     fetchProducts();
   }, []);
 
+  async function handleDeleteProduct(password: string) {
+    if (!deletingProduct) return;
+
+    const response = await fetch("/api/produtos", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        productId: deletingProduct.id,
+        password,
+        adminEmail: session?.email,
+        adminName: session?.name,
+      }),
+    });
+
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || "Não foi possível excluir o produto.");
+    }
+
+    await fetchProducts();
+  }
+
   const categories = useMemo(() => {
     const cats = Array.from(
       new Set(dbProducts.map((p) => p.category).filter(Boolean)),
@@ -54,7 +81,6 @@ export function Produtos() {
     return ["Todos", ...cats];
   }, [dbProducts]);
 
-  // Função para calcular os dias exatos até o vencimento
   const getDaysToExpiry = (dateStr?: string) => {
     if (!dateStr) return null;
     const expiryDate = new Date(dateStr + "T00:00:00").getTime();
@@ -63,13 +89,14 @@ export function Produtos() {
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   };
 
-  // Aplicação de todos os filtros juntos
   const filtered = dbProducts.filter((p) => {
     const matchSearch =
       p.name.toLowerCase().includes(search.toLowerCase()) ||
       (p.batch_number &&
         p.batch_number.toLowerCase().includes(search.toLowerCase()));
+
     const matchCat = catFilter === "Todos" || p.category === catFilter;
+
     const matchStock =
       stockFilter === "Todos" ||
       (stockFilter === "Critico"
@@ -80,13 +107,13 @@ export function Produtos() {
     if (expiryDaysFilter !== "Todos") {
       const daysToExpiry = getDaysToExpiry(p.expiration_date);
       if (daysToExpiry === null) {
-        matchExpiry = false; // Se o filtro está ativo, esconde produtos sem validade
+        matchExpiry = false;
       } else {
         const maxDays = parseInt(expiryDaysFilter);
         if (maxDays === 0) {
-          matchExpiry = daysToExpiry < 0; // Vencidos
+          matchExpiry = daysToExpiry < 0;
         } else {
-          matchExpiry = daysToExpiry >= 0 && daysToExpiry <= maxDays; // Vence no intervalo
+          matchExpiry = daysToExpiry >= 0 && daysToExpiry <= maxDays;
         }
       }
     }
@@ -98,7 +125,6 @@ export function Produtos() {
     (p) => p.stock <= (p.min_stock || 15),
   ).length;
 
-  // FUNÇÃO DE EXPORTAÇÃO PARA EXCEL/CSV
   const exportToCSV = () => {
     const headers = [
       "Nome do Produto",
@@ -118,7 +144,13 @@ export function Produtos() {
       `"${p.category}"`,
       `"${p.storage_type}"`,
       `"${p.batch_number || "S/L"}"`,
-      `"${p.expiration_date ? new Date(p.expiration_date + "T00:00:00").toLocaleDateString("pt-BR") : "Indeterminada"}"`,
+      `"${
+        p.expiration_date
+          ? new Date(p.expiration_date + "T00:00:00").toLocaleDateString(
+              "pt-BR",
+            )
+          : "Indeterminada"
+      }"`,
       p.cost_price?.toString().replace(".", ",") || "0,00",
       p.price?.toString().replace(".", ",") || "0,00",
       p.stock,
@@ -150,6 +182,16 @@ export function Produtos() {
             setEditingProduct(null);
           }}
           onSuccess={fetchProducts}
+        />
+      )}
+
+      {deletingProduct && (
+        <DeleteConfirmModal
+          title="Excluir Produto"
+          itemName={deletingProduct.name}
+          warningText="O item será removido do catálogo e do estoque ativo, mantendo apenas o registro em pedidos já finalizados."
+          onClose={() => setDeletingProduct(null)}
+          onConfirm={handleDeleteProduct}
         />
       )}
 
@@ -204,7 +246,6 @@ export function Produtos() {
 
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <Filter className="w-4 h-4 text-muted-foreground hidden sm:block" />
-
               <select
                 value={stockFilter}
                 onChange={(e: any) => setStockFilter(e.target.value)}
@@ -236,7 +277,11 @@ export function Produtos() {
                 <button
                   key={c}
                   onClick={() => setCatFilter(c)}
-                  className={`px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-colors border ${catFilter === c ? "bg-primary text-primary-foreground border-primary shadow-sm" : "bg-card text-muted-foreground border-border hover:bg-secondary"}`}
+                  className={`px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-colors border ${
+                    catFilter === c
+                      ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                      : "bg-card text-muted-foreground border-border hover:bg-secondary"
+                  }`}
                 >
                   {c}
                 </button>
@@ -264,7 +309,7 @@ export function Produtos() {
                         "Lote & Validade",
                         "Preço (Venda/Custo)",
                         "Estoque",
-                        "Ação",
+                        "Ações",
                       ].map((h) => (
                         <th
                           key={h}
@@ -368,17 +413,29 @@ export function Produtos() {
                               <span className="font-mono text-sm font-semibold">
                                 {p.stock} {p.unit}
                               </span>
-                              <StockBadge qty={p.stock} />
+                              <StockBadge
+                                qty={p.stock}
+                                minStock={p.min_stock || 15}
+                              />
                             </div>
                           </td>
                           <td className="py-3.5 px-4">
-                            <button
-                              onClick={() => setEditingProduct(p)}
-                              title="Editar Produto"
-                              className="p-2 rounded-lg bg-card border border-border hover:border-primary hover:text-primary transition-all opacity-60 group-hover:opacity-100 shadow-sm"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
+                            <div className="flex items-center gap-1.5 opacity-70 group-hover:opacity-100 transition-all">
+                              <button
+                                onClick={() => setEditingProduct(p)}
+                                title="Editar Produto"
+                                className="p-2 rounded-lg bg-card border border-border hover:border-primary hover:text-primary transition-all shadow-sm"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => setDeletingProduct(p)}
+                                title="Excluir Produto"
+                                className="p-2 rounded-lg bg-card border border-border hover:border-red-300 hover:bg-red-50 hover:text-red-600 transition-all shadow-sm"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -430,19 +487,22 @@ export function Produtos() {
                           <span className="font-mono text-sm font-semibold">
                             {p.stock} {p.unit}
                           </span>
-                          <StockBadge qty={p.stock} />
+                          <StockBadge
+                            qty={p.stock}
+                            minStock={p.min_stock || 15}
+                          />
                         </div>
                         <span className="font-bold text-primary text-base">
                           {fmt(p.price)}
                         </span>
                       </div>
 
-                      <div className="bg-secondary/30 rounded-xl p-3 flex items-center justify-between text-xs border border-border">
-                        <div className="flex flex-col gap-1 font-mono">
-                          <span className="text-muted-foreground font-semibold">
+                      <div className="bg-secondary/30 rounded-xl p-3 flex items-center justify-between text-xs border border-border gap-2">
+                        <div className="flex flex-col gap-1 font-mono min-w-0">
+                          <span className="text-muted-foreground font-semibold truncate">
                             Lote: {p.batch_number || "S/L"}
                           </span>
-                          <span className="flex items-center gap-1.5 text-muted-foreground">
+                          <span className="flex items-center gap-1.5 text-muted-foreground flex-wrap">
                             <Calendar className="w-3.5 h-3.5" />
                             {p.expiration_date
                               ? new Date(
@@ -461,12 +521,22 @@ export function Produtos() {
                             )}
                           </span>
                         </div>
-                        <button
-                          onClick={() => setEditingProduct(p)}
-                          className="px-4 py-2 rounded-lg border border-border bg-card text-foreground font-semibold hover:bg-secondary transition-colors shadow-sm active:scale-95 flex items-center gap-1.5"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" /> Editar
-                        </button>
+
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button
+                            onClick={() => setEditingProduct(p)}
+                            className="px-3 py-2 rounded-lg border border-border bg-card text-foreground font-semibold hover:bg-secondary transition-colors shadow-sm active:scale-95 flex items-center gap-1.5"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" /> Editar
+                          </button>
+                          <button
+                            onClick={() => setDeletingProduct(p)}
+                            title="Excluir Produto"
+                            className="p-2 rounded-lg border border-red-200 bg-red-50 text-red-600 font-semibold hover:bg-red-100 transition-colors shadow-sm active:scale-95 flex items-center justify-center"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
