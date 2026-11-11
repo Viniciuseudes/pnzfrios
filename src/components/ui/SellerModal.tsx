@@ -1,4 +1,5 @@
 "use client";
+
 import { useState, useEffect } from "react";
 import {
   X,
@@ -20,21 +21,21 @@ type SellerFormData = {
   name: string;
   region: string;
   target: string;
-  email?: string; // Opcional na edição
-  password?: string; // Opcional na edição
+  email?: string;
+  password?: string;
 };
 
 export function SellerModal({
-  seller, // <-- AGORA RECEBEMOS O VENDEDOR AQUI
+  seller,
   onClose,
   onSuccess,
 }: {
-  seller?: Seller | null; // Tipado como opcional para não quebrar a criação
+  seller?: Seller | null;
   onClose: () => void;
   onSuccess: () => void;
 }) {
   const [submitError, setSubmitError] = useState("");
-  const isEditing = !!seller; // Flag inteligente para saber se estamos editando
+  const isEditing = !!seller;
 
   const {
     register,
@@ -43,12 +44,10 @@ export function SellerModal({
     formState: { errors, isSubmitting },
   } = useForm<SellerFormData>();
 
-  // EFEITO PARA PREENCHER OS DADOS SE FOR EDIÇÃO
   useEffect(() => {
     if (seller) {
       setValue("name", seller.name);
       setValue("region", seller.region);
-      // Formata a meta (número do banco) para o formato de moeda brasileiro do input
       setValue(
         "target",
         seller.target.toLocaleString("pt-BR", {
@@ -62,10 +61,10 @@ export function SellerModal({
   const onSubmit = async (data: SellerFormData) => {
     setSubmitError("");
     try {
-      // Limpa a formatação da moeda para salvar no banco como FLOAT
       const numericTarget = parseFloat(
         data.target.replace(/\./g, "").replace(",", "."),
       );
+
       const initials = data.name
         .split(" ")
         .map((n) => n[0])
@@ -74,7 +73,6 @@ export function SellerModal({
         .toUpperCase();
 
       if (isEditing && seller) {
-        // FLUXO 1: EDIÇÃO (Apenas atualiza a tabela de vendedores)
         const { error: updateError } = await supabase
           .from("sellers")
           .update({
@@ -87,47 +85,32 @@ export function SellerModal({
 
         if (updateError) throw updateError;
       } else {
-        // FLUXO 2: CRIAÇÃO (Cria perfil + Conta de Acesso)
-        const { data: sellerData, error: sellerError } = await supabase
-          .from("sellers")
-          .insert([
-            {
-              name: data.name,
-              region: data.region,
-              target: numericTarget,
-              avatar: initials,
-              achieved: 0,
-              orders_count: 0,
-            },
-          ])
-          .select()
-          .single();
-
-        if (sellerError) throw sellerError;
-
-        const { error: accountError } = await supabase.from("accounts").insert([
-          {
-            email: data.email?.toLowerCase(),
-            password_hash: data.password,
-            role: "vendedor",
+        const response = await fetch("/api/vendedores", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             name: data.name,
+            region: data.region,
+            target: numericTarget,
             avatar: initials,
-            seller_id: sellerData.id,
-          },
-        ]);
+            email: data.email?.toLowerCase(),
+            password: data.password,
+          }),
+        });
 
-        if (accountError) throw accountError;
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.error || "Erro ao cadastrar vendedor.");
+        }
       }
 
       onSuccess();
       onClose();
     } catch (error: any) {
       console.error(error);
-      if (error.code === "23505") {
-        setSubmitError("Este e-mail já está sendo usado por outro usuário.");
-      } else {
-        setSubmitError("Erro ao salvar os dados. Verifique as informações.");
-      }
+      setSubmitError(
+        error.message || "Erro ao salvar os dados. Verifique as informações.",
+      );
     }
   };
 
@@ -178,7 +161,6 @@ export function SellerModal({
             onSubmit={handleSubmit(onSubmit)}
             className="space-y-6"
           >
-            {/* Seção 1: Dados Profissionais */}
             <div>
               <h3 className="text-xs font-bold text-primary uppercase tracking-widest mb-3 border-b border-border pb-2">
                 Dados Operacionais
@@ -191,7 +173,11 @@ export function SellerModal({
                   <input
                     {...register("name", { required: "O nome é obrigatório" })}
                     placeholder="Ex: João da Silva"
-                    className={`w-full px-3 py-2.5 rounded-lg border bg-input-background text-sm text-foreground focus:outline-none focus:ring-2 transition ${errors.name ? "border-red-500" : "border-border focus:ring-primary/30"}`}
+                    className={`w-full px-3 py-2.5 rounded-lg border bg-input-background text-sm text-foreground focus:outline-none focus:ring-2 transition ${
+                      errors.name
+                        ? "border-red-500"
+                        : "border-border focus:ring-primary/30"
+                    }`}
                   />
                   {errors.name && (
                     <p className="text-[10px] text-red-500 mt-1">
@@ -210,7 +196,11 @@ export function SellerModal({
                       required: "A região é obrigatória",
                     })}
                     placeholder="Ex: Zona Sul"
-                    className={`w-full px-3 py-2.5 rounded-lg border bg-input-background text-sm text-foreground focus:outline-none focus:ring-2 transition ${errors.region ? "border-red-500" : "border-border focus:ring-primary/30"}`}
+                    className={`w-full px-3 py-2.5 rounded-lg border bg-input-background text-sm text-foreground focus:outline-none focus:ring-2 transition ${
+                      errors.region
+                        ? "border-red-500"
+                        : "border-border focus:ring-primary/30"
+                    }`}
                   />
                 </div>
 
@@ -228,13 +218,16 @@ export function SellerModal({
                       register("target").onChange(e);
                     }}
                     placeholder="15.000,00"
-                    className={`w-full px-3 py-2.5 rounded-lg border bg-input-background text-sm text-foreground font-mono focus:outline-none focus:ring-2 transition ${errors.target ? "border-red-500" : "border-border focus:ring-primary/30"}`}
+                    className={`w-full px-3 py-2.5 rounded-lg border bg-input-background text-sm text-foreground font-mono focus:outline-none focus:ring-2 transition ${
+                      errors.target
+                        ? "border-red-500"
+                        : "border-border focus:ring-primary/30"
+                    }`}
                   />
                 </div>
               </div>
             </div>
 
-            {/* Seção 2: Credenciais de Acesso (Só exibe se estiver CRIANDO NOVO) */}
             {!isEditing && (
               <div>
                 <h3 className="text-xs font-bold text-primary uppercase tracking-widest mb-3 border-b border-border pb-2">
@@ -252,17 +245,20 @@ export function SellerModal({
                         required: "O e-mail é obrigatório",
                       })}
                       placeholder="vendedor@empresa.com.br"
-                      className={`w-full px-3 py-2.5 rounded-lg border bg-card text-sm text-foreground focus:outline-none focus:ring-2 transition ${errors.email ? "border-red-500" : "border-border focus:ring-primary/30"}`}
+                      className={`w-full px-3 py-2.5 rounded-lg border bg-card text-sm text-foreground focus:outline-none focus:ring-2 transition ${
+                        errors.email
+                          ? "border-red-500"
+                          : "border-border focus:ring-primary/30"
+                      }`}
                     />
                   </div>
-
                   <div>
                     <label className="block text-xs font-medium text-foreground mb-1 flex items-center gap-1">
                       <KeyRound className="w-3 h-3 text-muted-foreground" />{" "}
                       Senha Inicial *
                     </label>
                     <input
-                      type="text" // Deixamos como text para visualizar a senha ao criar
+                      type="text"
                       {...register("password", {
                         required: "A senha é obrigatória",
                         minLength: {
@@ -271,7 +267,11 @@ export function SellerModal({
                         },
                       })}
                       placeholder="Defina uma senha"
-                      className={`w-full px-3 py-2.5 rounded-lg border bg-card text-sm text-foreground focus:outline-none focus:ring-2 transition ${errors.password ? "border-red-500" : "border-border focus:ring-primary/30"}`}
+                      className={`w-full px-3 py-2.5 rounded-lg border bg-card text-sm text-foreground focus:outline-none focus:ring-2 transition ${
+                        errors.password
+                          ? "border-red-500"
+                          : "border-border focus:ring-primary/30"
+                      }`}
                     />
                     {errors.password && (
                       <p className="text-[10px] text-red-500 mt-1">

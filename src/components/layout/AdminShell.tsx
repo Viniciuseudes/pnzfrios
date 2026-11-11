@@ -23,8 +23,6 @@ import {
 import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
 import { useApp } from "@/contexts/AppContext";
 import { supabase } from "@/utils/supabase";
-
-// 1. IMPORT DO MOTOR DE PUSH
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 
 const logoImg = "/logo.png";
@@ -39,40 +37,23 @@ const navItems: { href: string; label: string; icon: React.ElementType }[] = [
   { href: "/admin/ciclo", label: "Ciclo de Pedidos", icon: Layers },
 ];
 
-const notifications = [
-  {
-    id: 1,
-    msg: "Novo pedido de Distribuidora Norte & Sul",
-    type: "info",
-    time: "18 min",
-  },
-  {
-    id: 2,
-    msg: "Fernanda Costa atingiu 98% da meta!",
-    type: "success",
-    time: "1h",
-  },
-];
-
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { logout, urgentActive } = useApp();
+  const { session, logout, urgentActive } = useApp();
 
-  // 2. ATIVAÇÃO INVISÍVEL DAS NOTIFICAÇÕES PARA O ADMIN
-  // Pede a permissão e registra o Service Worker no Supabase como 'admin'
   usePushNotifications();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-
-  // Estado real para contar produtos com baixo estoque no Supabase
   const [lowStockCount, setLowStockCount] = useState(0);
+
+  const gestorName = session?.name || "Gestor";
+  const gestorAvatar = session?.avatar || "GS";
 
   useEffect(() => {
     async function fetchLowStock() {
-      // Usamos count para não precisar baixar todos os dados, apenas o número
       const { count } = await supabase
         .from("products")
         .select("*", { count: "exact", head: true })
@@ -96,7 +77,6 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       className="flex h-screen bg-background overflow-hidden"
       style={{ fontFamily: "'Inter', sans-serif" }}
     >
-      {/* Overlay com desfoque premium no mobile */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 lg:hidden"
@@ -150,8 +130,6 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             >
               <Icon className="w-5 h-5 flex-shrink-0" />
               {label}
-
-              {/* Badge dinâmico vindo do Supabase */}
               {href === "/admin/produtos" && lowStockCount > 0 && (
                 <span className="ml-auto w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">
                   {lowStockCount}
@@ -168,17 +146,20 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
         <div className="px-3 py-4 border-t border-sidebar-border">
           <div className="flex items-center gap-3 px-2">
-            <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-              AC
+            <div className="w-8 h-8 rounded-full bg-[#c8921c] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+              {gestorAvatar}
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold text-white truncate">
-                Admin Central
+                {gestorName}
               </p>
-              <p className="text-[10px] text-sidebar-foreground/50">Gestor</p>
+              <p className="text-[10px] text-sidebar-foreground/50">
+                Gestor Administrativo
+              </p>
             </div>
             <button
               onClick={handleLogout}
+              title="Sair"
               className="text-sidebar-foreground/50 hover:text-white transition-colors"
             >
               <LogOut className="w-4 h-4" />
@@ -214,22 +195,20 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 className="relative p-2 rounded-lg hover:bg-secondary transition-colors"
               >
                 <Bell className="w-5 h-5 text-muted-foreground" />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
+                {lowStockCount > 0 && (
+                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
+                )}
               </button>
 
               {notifOpen && (
                 <div className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-border">
                     <p className="text-sm font-semibold text-foreground">
-                      Notificações
+                      Notificações Operacionais
                     </p>
-                    <span className="text-xs text-muted-foreground">
-                      {notifications.length + (lowStockCount > 0 ? 1 : 0)} novas
-                    </span>
                   </div>
                   <div className="divide-y divide-border max-h-72 overflow-y-auto">
-                    {/* Injeta a notificação de estoque dinamicamente se houver */}
-                    {lowStockCount > 0 && (
+                    {lowStockCount > 0 ? (
                       <div className="flex gap-3 px-4 py-3 hover:bg-secondary/40 transition-colors">
                         <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0 bg-amber-500" />
                         <div className="flex-1 min-w-0">
@@ -238,38 +217,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                             crítico!
                           </p>
                           <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            Agora
+                            <Clock className="w-3 h-3" /> Agora
                           </p>
                         </div>
                       </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground text-center py-6">
+                        Nenhum alerta pendente no momento.
+                      </p>
                     )}
-
-                    {notifications.map((n) => (
-                      <div
-                        key={n.id}
-                        className="flex gap-3 px-4 py-3 hover:bg-secondary/40 transition-colors"
-                      >
-                        <div
-                          className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${
-                            n.type === "warn"
-                              ? "bg-amber-500"
-                              : n.type === "success"
-                                ? "bg-[#2d6a3a]"
-                                : "bg-[#1e4023]"
-                          }`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-foreground leading-snug">
-                            {n.msg}
-                          </p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {n.time} atrás
-                          </p>
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 </div>
               )}
@@ -283,34 +239,34 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 }}
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-secondary transition-colors"
               >
-                <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
-                  AC
+                <div className="w-7 h-7 rounded-full bg-[#1e4023] flex items-center justify-center text-white text-xs font-bold">
+                  {gestorAvatar}
                 </div>
                 <span className="hidden sm:block text-sm font-medium text-foreground">
-                  Admin
+                  {gestorName.split(" ")[0]}
                 </span>
                 <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
               </button>
 
               {profileOpen && (
-                <div className="absolute right-0 top-full mt-2 w-44 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
-                  {[
-                    {
-                      icon: Settings,
-                      label: "Configurações",
-                      action: () => {},
-                    },
-                    { icon: LogOut, label: "Sair", action: handleLogout },
-                  ].map(({ icon: Icon, label, action }) => (
-                    <button
-                      key={label}
-                      onClick={action}
-                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-foreground hover:bg-secondary/50 transition-colors"
-                    >
-                      <Icon className="w-4 h-4 text-muted-foreground" />
-                      {label}
-                    </button>
-                  ))}
+                <div className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-border bg-secondary/30">
+                    <p className="text-xs font-bold text-foreground truncate">
+                      {gestorName}
+                    </p>
+                    {session?.email && (
+                      <p className="text-[10px] text-muted-foreground truncate">
+                        {session.email}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Sair da Conta
+                  </button>
                 </div>
               )}
             </div>

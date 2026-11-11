@@ -1,4 +1,5 @@
 "use client";
+
 import { useState } from "react";
 import { motion } from "motion/react";
 import {
@@ -18,6 +19,7 @@ import {
 import { colFor, nextStatus } from "@/utils/kanban";
 import { fmt } from "@/utils/format";
 import { supabase } from "@/utils/supabase";
+import { useApp } from "@/contexts/AppContext";
 import type { KanbanOrder } from "@/types";
 
 export function OrderDetailModal({
@@ -41,11 +43,14 @@ export function OrderDetailModal({
   onAddNote: (id: string, note: string) => void;
   isAdmin: boolean;
 }) {
+  const { session } = useApp();
+
   const [note, setNote] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
 
   const [isEmittingNfe, setIsEmittingNfe] = useState(false);
   const [isCheckingNfe, setIsCheckingNfe] = useState(false);
+
   const [localNfeStatus, setLocalNfeStatus] = useState(order.nfeStatus);
   const [localNfeUrl, setLocalNfeUrl] = useState(order.nfeUrl);
 
@@ -134,7 +139,6 @@ export function OrderDetailModal({
 
       setIsNcmModalOpen(false);
       setIsEmittingNfe(true);
-
       await processNfeEmission();
     } catch (err) {
       console.error("Erro ao salvar NCMs:", err);
@@ -149,10 +153,13 @@ export function OrderDetailModal({
       const res = await fetch("/api/nfe/emitir", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: order.id }),
+        body: JSON.stringify({
+          orderId: order.id,
+          emittedBy: session?.name || "Gestor",
+        }),
       });
-      const data = await res.json();
 
+      const data = await res.json();
       if (!res.ok)
         throw new Error(data.error || "Erro desconhecido ao emitir NF-e");
 
@@ -191,8 +198,8 @@ export function OrderDetailModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orderId: order.id }),
       });
-      const data = await res.json();
 
+      const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Erro ao consultar status na SEFAZ.");
       }
@@ -335,7 +342,7 @@ export function OrderDetailModal({
               </span>
               <span className="flex items-center gap-1">
                 <MapPin className="w-3 h-3" />
-                {order.deliveryAddress?.split(" ")[1]?.trim() || "Sem endereço"}
+                {order.deliveryAddress || "Sem endereço"}
               </span>
             </p>
           </div>
@@ -407,8 +414,8 @@ export function OrderDetailModal({
               </div>
               {localNfeStatus === "ERRO" && (
                 <p className="text-[10px] text-red-500 mt-2 font-medium">
-                  ⚠️ Houve uma falha na última tentativa de emissão. A SEFAZ
-                  pode ter rejeitado.
+                  Houve uma falha na última tentativa de emissão. A SEFAZ pode
+                  ter rejeitado.
                 </p>
               )}
             </div>

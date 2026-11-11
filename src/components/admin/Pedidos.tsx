@@ -1,4 +1,5 @@
 "use client";
+
 import { useState, useEffect } from "react";
 import {
   Search,
@@ -17,8 +18,12 @@ import { Avatar } from "@/components/ui/Avatar";
 import { fmt } from "@/utils/format";
 import type { Client, Product, OrderItem, Seller } from "@/types";
 import { supabase } from "@/utils/supabase";
+import { useApp } from "@/contexts/AppContext";
 
 export function Pedidos() {
+  const { session } = useApp();
+  const gestorName = session?.name || "Gestor";
+
   const [dbClients, setDbClients] = useState<Client[]>([]);
   const [dbProducts, setDbProducts] = useState<Product[]>([]);
   const [dbSellers, setDbSellers] = useState<Seller[]>([]);
@@ -26,17 +31,15 @@ export function Pedidos() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  // "" = Venda Direta pelo Gestor logado | number = ID do Vendedor
   const [selectedSellerId, setSelectedSellerId] = useState<number | "">("");
-
   const [clientSearch, setClientSearch] = useState("");
   const [showClientDrop, setShowClientDrop] = useState(false);
   const [productSearch, setProductSearch] = useState("");
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
-
   const [discount, setDiscount] = useState("0");
   const [confirmed, setConfirmed] = useState(false);
 
-  // Estados de Pagamento (Integração Asaas)
   const [billingType, setBillingType] = useState<
     "PIX" | "BOLETO" | "CREDIT_CARD"
   >("PIX");
@@ -63,7 +66,6 @@ export function Pedidos() {
       if (clientsData) setDbClients(clientsData as Client[]);
       if (productsData) setDbProducts(productsData as Product[]);
       if (sellersData) setDbSellers(sellersData as Seller[]);
-
       setLoadingData(false);
     }
     fetchData();
@@ -118,8 +120,7 @@ export function Pedidos() {
   };
 
   async function handleConfirmOrder() {
-    if (!selectedClient || !selectedSellerId || orderItems.length === 0) return;
-
+    if (!selectedClient || orderItems.length === 0) return;
     setIsSubmitting(true);
 
     try {
@@ -136,42 +137,52 @@ export function Pedidos() {
       }
       const orderNumber = `#${nextNum.toString().padStart(4, "0")}`;
 
-      // FIX 2: Alterando o status para não poluir o Kanban antes do pagamento
+      const fullDeliveryAddress = [
+        selectedClient.street,
+        selectedClient.number,
+        selectedClient.neighborhood,
+        selectedClient.city,
+      ]
+        .filter(Boolean)
+        .join(", ");
+
       const { data: order, error: orderError } = await supabase
         .from("orders")
         .insert({
           order_number: orderNumber,
           client_id: selectedClient.id,
-          seller_id: selectedSellerId,
+          seller_id: selectedSellerId === "" ? null : Number(selectedSellerId),
           priority: "Normal",
           status: "aguardando_pagamento",
           payment_status: "PENDING",
           payment_method: billingType,
-          delivery_address: selectedClient.city,
+          delivery_address: fullDeliveryAddress || selectedClient.city,
         })
         .select()
         .single();
 
       if (orderError) throw orderError;
 
-      // FIX 1: Rateando o desconto no preço unitário dos itens (Matemática fiscal correta)
       const discountPercent = parseFloat(discount || "0") / 100;
-
       const itemsToInsert = orderItems.map((item) => ({
         order_id: order.id,
         product_id: item.productId,
         qty: Number(item.qty) || 1,
-        // Aplica a proporção do desconto diretamente no valor que vai pro banco
         price: item.price * (1 - discountPercent),
       }));
 
       await supabase.from("order_items").insert(itemsToInsert);
 
+      const saleOriginNote =
+        selectedSellerId === ""
+          ? `Venda direta realizada por ${gestorName}.`
+          : `Pedido lançado por ${gestorName} para vendedor.`;
+
       await supabase.from("order_history").insert({
         order_id: order.id,
         status: "aguardando_pagamento",
-        changed_by: "Admin Central",
-        note: `Pedido criado aguardando pagamento. Método: ${billingType} (${installments}x). Total: ${fmt(total)}`,
+        changed_by: gestorName,
+        note: `${saleOriginNote} Método: ${billingType} (${installments}x). Total: ${fmt(total)}`,
       });
 
       const checkoutRes = await fetch("/api/checkout", {
@@ -188,6 +199,7 @@ export function Pedidos() {
       });
 
       const checkoutData = await checkoutRes.json();
+
       if (!checkoutRes.ok)
         throw new Error(
           checkoutData.error || "Erro ao gerar cobrança no Asaas",
@@ -258,7 +270,8 @@ export function Pedidos() {
         ) : (
           <p className="text-sm text-muted-foreground max-w-xs mt-2">
             O pedido para <strong>{selectedClient?.name}</strong> foi registrado
-            (Total: <strong>{fmt(total)}</strong>).
+            por <strong>{gestorName}</strong> (Total:{" "}
+            <strong>{fmt(total)}</strong>).
           </p>
         )}
 
@@ -285,7 +298,8 @@ export function Pedidos() {
       <div>
         <h1 className="text-xl font-bold text-foreground">Nova Venda</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Criação rápida de pedido e cobrança (Painel Interno)
+          Criação rápida de pedido e cobrança — Operador:{" "}
+          <strong className="text-foreground">{gestorName}</strong>
         </p>
       </div>
 
@@ -305,10 +319,11 @@ export function Pedidos() {
                   Dados da Venda
                 </h3>
               </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-foreground mb-1.5">
-                    Cliente
+                    Cliente *
                   </label>
                   {selectedClient ? (
                     <div className="flex items-center gap-3 p-2.5 rounded-lg bg-secondary/50 border border-border">
@@ -377,21 +392,25 @@ export function Pedidos() {
 
                 <div>
                   <label className="block text-xs font-medium text-foreground mb-1.5">
-                    Vendedor Responsável *
+                    Modalidade / Vendedor (Opcional)
                   </label>
                   <div className="relative">
                     <User2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <select
                       value={selectedSellerId}
                       onChange={(e) =>
-                        setSelectedSellerId(Number(e.target.value))
+                        setSelectedSellerId(
+                          e.target.value === "" ? "" : Number(e.target.value),
+                        )
                       }
                       className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-border bg-input-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 transition appearance-none cursor-pointer"
                     >
-                      <option value="">Selecione o vendedor...</option>
+                      <option value="">
+                        Venda Direta ({gestorName}) — Sem Vendedor
+                      </option>
                       {dbSellers.map((s) => (
                         <option key={s.id} value={s.id}>
-                          {s.name} - {s.region}
+                          Vendedor: {s.name} ({s.region})
                         </option>
                       ))}
                     </select>
@@ -524,7 +543,6 @@ export function Pedidos() {
                     Forma de Pagamento
                   </h3>
                 </div>
-
                 <div className="grid grid-cols-3 gap-3">
                   <button
                     onClick={() => setBillingType("PIX")}
@@ -562,7 +580,6 @@ export function Pedidos() {
                     </span>
                   </button>
                 </div>
-
                 <div className="grid grid-cols-2 gap-4 mt-4 bg-secondary/30 p-4 rounded-xl border border-border">
                   <div>
                     <label className="block text-xs font-medium text-foreground mb-1.5">
@@ -575,7 +592,6 @@ export function Pedidos() {
                       className="w-full px-3 py-2.5 rounded-lg border border-border bg-card text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                     />
                   </div>
-
                   {(billingType === "CREDIT_CARD" ||
                     billingType === "BOLETO") && (
                     <div>
@@ -614,7 +630,16 @@ export function Pedidos() {
                   Resumo do Pedido
                 </h3>
               </div>
+
               <div className="space-y-3 text-sm">
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Responsável</span>
+                  <span className="font-semibold text-foreground truncate max-w-[160px]">
+                    {selectedSellerId === ""
+                      ? `${gestorName} (Direta)`
+                      : dbSellers.find((s) => s.id === selectedSellerId)?.name}
+                  </span>
+                </div>
                 <div className="flex justify-between text-muted-foreground">
                   <span>Itens ({orderItems.length})</span>
                   <span>
@@ -657,10 +682,7 @@ export function Pedidos() {
 
               <button
                 disabled={
-                  !selectedClient ||
-                  !selectedSellerId ||
-                  orderItems.length === 0 ||
-                  isSubmitting
+                  !selectedClient || orderItems.length === 0 || isSubmitting
                 }
                 onClick={handleConfirmOrder}
                 className="mt-5 w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-[#163318] active:bg-[#0f2210] transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-sm flex items-center justify-center gap-2"
@@ -673,12 +695,9 @@ export function Pedidos() {
                   </>
                 )}
               </button>
-
-              {(!selectedClient ||
-                !selectedSellerId ||
-                orderItems.length === 0) && (
+              {(!selectedClient || orderItems.length === 0) && (
                 <p className="text-xs text-muted-foreground text-center mt-3">
-                  Preencha cliente, vendedor e adicione produtos para fechar.
+                  Selecione o cliente e adicione produtos para fechar.
                 </p>
               )}
             </div>

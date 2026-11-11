@@ -1,8 +1,8 @@
 "use client";
+
 import { useState } from "react";
 import { motion } from "motion/react";
 import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
-import { supabase } from "@/utils/supabase";
 import type { UserRole } from "@/types";
 
 const logoImg = "/logo.png";
@@ -10,7 +10,11 @@ const logoImg = "/logo.png";
 export function LoginScreen({
   onLogin,
 }: {
-  onLogin: (role: UserRole, sellerId?: number) => void;
+  onLogin: (
+    role: UserRole,
+    sellerId?: number,
+    userData?: { id?: string; name?: string; email?: string; avatar?: string },
+  ) => void;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,26 +31,34 @@ export function LoginScreen({
     setLoading(true);
 
     try {
-      const { data: acc, error: authError } = await supabase
-        .from("accounts")
-        .select("*")
-        .eq("email", email.trim().toLowerCase())
-        .eq("password_hash", password)
-        .single();
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          password,
+        }),
+      });
 
-      if (authError || !acc) {
-        setError("E-mail ou senha incorretos.");
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        setError(result.error || "E-mail ou senha incorretos.");
         setLoading(false);
         return;
       }
 
+      const { user } = result;
+
       setTimeout(() => {
         setLoading(false);
-        const safeRole = String(acc.role).toLowerCase() as UserRole;
-        const safeSellerId = acc.seller_id || acc.sellerId || undefined;
-
-        onLogin(safeRole, safeSellerId);
-      }, 800);
+        onLogin(user.role as UserRole, user.sellerId, {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          avatar: user.avatar,
+        });
+      }, 400);
     } catch (err) {
       console.error(err);
       setError("Erro ao conectar no servidor.");
@@ -233,24 +245,6 @@ export function LoginScreen({
                 {error}
               </motion.p>
             )}
-
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <div
-                  className="w-4 h-4 rounded border border-white/20 flex items-center justify-center"
-                  style={{ background: "rgba(255,255,255,0.08)" }}
-                >
-                  <div className="w-2 h-2 rounded-sm bg-[#c8921c]" />
-                </div>
-                <span className="text-xs text-white/40">Lembrar-me</span>
-              </label>
-              <button
-                type="button"
-                className="text-xs text-[#c8921c]/80 hover:text-[#c8921c] transition-colors"
-              >
-                Esqueceu a senha?
-              </button>
-            </div>
 
             <button
               type="submit"
